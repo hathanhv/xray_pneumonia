@@ -1,0 +1,6 @@
+defaults:
+  - classification_2025_core.yaml
+  - ../../preprocessing/lung_roi.yaml
+
+experiment:
+  name: classification_2025_roi

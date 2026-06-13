@@ -1,0 +1,52 @@
+defaults:
+  - ambigan_boundary_generation.yaml
+
+experiment:
+  name: ambigan_boundary_generation_smoke
+
+model:
+  pretrained: false
+  finetune_mode: head
+  freeze_batchnorm: true
+
+dataloader:
+  batch_size: 2
+  num_workers: 0
+  pin_memory: false
+
+oracle:
+  epochs: 1
+  batch_size: 2
+  optimizer:
+    name: adam
+    learning_rate: 0.001
+    weight_decay: 0.0
+  scheduler:
+    name: cosine
+    t_max: 1
+
+ambigan:
+  image_size: 224
+  latent_dim: 8
+  generator_filters: 2
+  discriminator_filters: 2
+  drop_last: false
+  dcgan_training:
+    epochs: 1
+    batch_size: 2
+    generator_lr: 0.0002
+    discriminator_lr: 0.0002
+    betas: [0.0, 0.999]
+  ambiguity_training:
+    epochs: 1
+    generator_lr: 0.0001
+    discriminator_lr: 0.0002
+    betas: [0.0, 0.999]
+    alpha: 0.20
+    variance: 0.10
+    oracle_temperature: 3.0
+  generation:
+    count: 2
+    ambiguity_threshold: 0.51
+    batch_size: 2
+    max_attempt_multiplier: 2

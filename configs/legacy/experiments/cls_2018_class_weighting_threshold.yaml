@@ -1,0 +1,69 @@
+defaults:
+  - ../../base/default.yaml
+  - ../../datasets/xray_2018.yaml
+  - ../../models/mobilenet_v2.yaml
+  - ../../preprocessing/resize.yaml
+
+experiment:
+  name: cls_2018_class_weighting_threshold
+
+seed: 42
+return_metadata: true
+
+input:
+  grayscale: false
+  normalize: true
+
+model:
+  pretrained: true
+  init_checkpoint_path: null
+  dropout: 0.2
+  finetune_mode: full
+  freeze_batchnorm: false
+
+augmentation:
+  name: baseline
+  horizontal_flip: 0.5
+  rotation: 10
+
+sampler:
+  name: random
+
+dataloader:
+  batch_size: 32
+  num_workers: 2
+  pin_memory: true
+
+advanced:
+  protocol: class_weighting_threshold
+  training:
+    epochs: 15
+    class_weighting:
+      strategy: manual
+      values: [3.0, 1.0]
+    loss:
+      name: weighted_cross_entropy
+      label_smoothing: 0.0
+    optimizer:
+      name: adam
+      learning_rate: 0.0001
+      weight_decay: 0.0
+    scheduler:
+      name: cosine
+      t_max: 15
+    early_stopping:
+      monitor: val_accuracy
+      mode: max
+      patience: 0
+      constraints: []
+  threshold_tuning:
+    start: 0.10
+    stop: 0.95
+    step: 0.01
+    min_recall: 0.95
+    fallback_recall: 0.90
+    objective: min_fp
+  model_selection:
+    min_recall: 0.95
+    min_specificity: 0.0
+    min_accuracy: 0.0

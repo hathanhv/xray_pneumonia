@@ -1,0 +1,4 @@
+augmentation:
+  name: light_head_finetuning
+  horizontal_flip: 0.5
+  rotation: 3

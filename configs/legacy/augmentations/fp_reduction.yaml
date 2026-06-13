@@ -1,0 +1,4 @@
+augmentation:
+  name: fp_reduction
+  horizontal_flip: 0.5
+  rotation: 5

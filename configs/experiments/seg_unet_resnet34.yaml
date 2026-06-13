@@ -1,0 +1,62 @@
+defaults:
+  - ../base/default.yaml
+
+experiment:
+  name: seg_unet_resnet34
+
+seed: 42
+
+dataset:
+  images_dir: data/lung_seg_input/2025_all/images
+  masks_dir: data/lung_seg_outputs/2025_all/final_masks
+  manifest_path: data/manifests/lung_segmentation_2025.csv
+  mask_suffix: _mask
+  mask_threshold: 127
+  val_fraction: 0.15
+  test_fraction: 0.10
+  augmentation:
+    horizontal_flip: 0.5
+    rotation_degrees: 7
+
+model:
+  architecture: unet
+  encoder: resnet34
+  encoder_weights: imagenet
+  image_size: 256
+  in_channels: 3
+  classes: 1
+
+training:
+  epochs: 30
+  batch_size: 8
+  num_workers: 2
+  pin_memory: true
+  loss:
+    name: dice_bce
+    dice_weight: 0.5
+    bce_weight: 0.5
+    smooth: 1.0
+  optimizer:
+    name: adam
+    learning_rate: 0.0001
+    weight_decay: 0.0
+  scheduler:
+    name: reduce_on_plateau
+    mode: min
+    factor: 0.5
+    patience: 2
+    min_lr: 0.000001
+  early_stopping:
+    monitor: val_loss
+    mode: min
+    patience: 5
+    min_delta: 0.0001
+
+evaluation:
+  threshold: 0.5
+
+export:
+  backup_existing: true
+  destinations:
+    - checkpoints/lung_segmentation/unet_lung_segmentation.pth
+    - monai_apps/lung_monai_app/model/unet_lung_segmentation.pth

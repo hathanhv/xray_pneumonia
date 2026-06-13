@@ -1,0 +1,5 @@
+lung_segmentation:
+  model:
+    checkpoint_path: checkpoints/lung_segmentation/unet_lung_segmentation.pth
+    device: null
+    threshold: 0.5

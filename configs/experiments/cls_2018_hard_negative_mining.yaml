@@ -1,0 +1,117 @@
+defaults:
+  - ../base/default.yaml
+  - ../datasets/xray_2018.yaml
+  - ../models/mobilenet_v2.yaml
+  - ../preprocessing/resize.yaml
+
+experiment:
+  name: cls_2018_hard_negative_mining
+
+seed: 42
+return_metadata: true
+
+input:
+  grayscale: false
+  normalize: true
+
+model:
+  pretrained: true
+  init_checkpoint_path: null
+  dropout: 0.2
+  finetune_mode: full
+  freeze_batchnorm: false
+
+augmentation:
+  name: baseline
+  horizontal_flip: 0.5
+  rotation: 10
+
+sampler:
+  name: random
+
+dataloader:
+  batch_size: 32
+  num_workers: 2
+  pin_memory: true
+
+advanced:
+  protocol: hard_negative_mining
+  stage1:
+    epochs: 15
+    class_weighting:
+      strategy: manual
+      values: [3.0, 1.0]
+    loss:
+      name: focal
+      gamma: 2.0
+      alpha_mode: inside_ce
+    optimizer:
+      name: adam
+      learning_rate: 0.0001
+      weight_decay: 0.0
+    scheduler:
+      name: cosine
+      t_max: 15
+    early_stopping:
+      selection: recall_constrained
+      monitor: val_f1
+      mode: max
+      fallback_monitor: val_specificity
+      fallback_mode: max
+      patience: 0
+      constraints:
+        - metric: val_recall
+          operator: ">="
+          value: 0.95
+  hard_negative_mining:
+    threshold: 0.30
+    oversample_factor: 3
+  stage2:
+    epochs: 10
+    class_weighting:
+      strategy: manual
+      values: [3.0, 1.0]
+    loss:
+      name: focal
+      gamma: 2.0
+      alpha_mode: inside_ce
+    optimizer:
+      name: adam
+      learning_rate: 0.00002
+      weight_decay: 0.00001
+    scheduler:
+      name: cosine
+      t_max: 10
+    early_stopping:
+      selection: recall_constrained
+      monitor: val_f1
+      mode: max
+      fallback_monitor: val_specificity
+      fallback_mode: max
+      patience: 0
+      constraints:
+        - metric: val_recall
+          operator: ">="
+          value: 0.95
+  threshold_tuning:
+    start: 0.10
+    stop: 0.95
+    step: 0.01
+    min_recall: 0.95
+    fallback_recall: 0.90
+    objective: min_fp
+  tta:
+    enabled: true
+    image_size: 224
+    rotation: 5
+    brightness_delta: 0.1
+    scale: 1.1
+  temperature_scaling:
+    enabled: true
+    initial_temperature: 1.5
+    lr: 0.01
+    max_iter: 100
+  model_selection:
+    min_recall: 0.95
+    min_specificity: 0.0
+    min_accuracy: 0.0

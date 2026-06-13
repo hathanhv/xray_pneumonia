@@ -1,0 +1,6 @@
+dataset:
+  name: xray_2025_lung_crop_corrected
+  data_dir: data/final/xray_2025_lung_crop_corrected
+  class_names:
+    - NORMAL
+    - PNEUMONIA

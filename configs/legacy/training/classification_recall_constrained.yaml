@@ -1,0 +1,10 @@
+training:
+  early_stopping:
+    monitor: val_f1
+    mode: max
+    patience: 5
+    min_delta: 0.0
+    constraints:
+      - metric: val_recall
+        operator: ">="
+        value: 0.95

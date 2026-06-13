@@ -1,0 +1,3 @@
+preprocessing:
+  name: resize
+  size: 224

@@ -1,0 +1,12 @@
+monai_app:
+  app_dir: monai_apps/lung_monai_app
+  studies: data/qc/fail_qc/images
+  models:
+    - lung_segmentation
+    - classifier
+  server:
+    host: 0.0.0.0
+    port: 8000
+  classifier:
+    checkpoint_path: checkpoints/pneumonia_classifier/mobilenet_2025_lung_crop_corrected.pth
+    include_gradcam: true

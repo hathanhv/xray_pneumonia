@@ -1,0 +1,82 @@
+defaults:
+  - ../base/default.yaml
+  - ../datasets/xray_2018.yaml
+  - ../models/mobilenet_v2.yaml
+  - ../preprocessing/resize.yaml
+
+experiment:
+  name: ambigan_boundary_generation
+
+seed: 42
+return_metadata: true
+
+input:
+  grayscale: false
+  normalize: true
+
+model:
+  pretrained: true
+  init_checkpoint_path: null
+  dropout: 0.2
+  finetune_mode: full
+  freeze_batchnorm: false
+
+dataloader:
+  batch_size: 32
+  num_workers: 2
+  pin_memory: true
+
+oracle:
+  checkpoint_path: null
+  image_size: 224
+  epochs: 10
+  batch_size: 32
+  augmentation:
+    name: strong
+    horizontal_flip: 0.5
+    rotation: 10
+  class_weighting:
+    strategy: manual
+    values: [3.0, 1.0]
+  loss:
+    name: weighted_cross_entropy
+  optimizer:
+    name: adam
+    learning_rate: 0.0001
+    weight_decay: 0.00001
+  scheduler:
+    name: cosine
+    t_max: 10
+  early_stopping:
+    monitor: val_accuracy
+    mode: max
+    patience: 0
+    constraints: []
+
+ambigan:
+  image_size: 224
+  image_channels: 1
+  latent_dim: 256
+  generator_filters: 32
+  discriminator_filters: 16
+  gradient_clip: 1.0
+  drop_last: true
+  dcgan_training:
+    epochs: 80
+    batch_size: 32
+    generator_lr: 0.0002
+    discriminator_lr: 0.0002
+    betas: [0.0, 0.999]
+  ambiguity_training:
+    epochs: 50
+    generator_lr: 0.0001
+    discriminator_lr: 0.0002
+    betas: [0.0, 0.999]
+    alpha: 0.20
+    variance: 0.10
+    oracle_temperature: 3.0
+  generation:
+    count: 500
+    ambiguity_threshold: 0.20
+    batch_size: 64
+    max_attempt_multiplier: 30

@@ -1,0 +1,8 @@
+defaults:
+  - classification_2025_core.yaml
+
+experiment:
+  name: classification_2025_held_out
+
+evaluation:
+  protocol: held_out_validation

@@ -1,0 +1,13 @@
+project:
+  name: xray_pneumonia_project
+
+experiment:
+  output_root: outputs/experiments
+
+reproducibility:
+  seed: 42
+  deterministic: true
+  warn_only: true
+
+logging:
+  level: INFO

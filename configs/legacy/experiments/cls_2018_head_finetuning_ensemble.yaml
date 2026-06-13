@@ -1,0 +1,95 @@
+defaults:
+  - ../../base/default.yaml
+  - ../../datasets/xray_2018.yaml
+  - ../../models/mobilenet_v2.yaml
+  - ../../preprocessing/resize.yaml
+
+experiment:
+  name: cls_2018_head_finetuning_ensemble
+
+seed: 42
+return_metadata: true
+
+input:
+  grayscale: false
+  normalize: true
+
+model:
+  pretrained: false
+  init_checkpoint_path: null
+  dropout: 0.3
+  finetune_mode: full
+  freeze_batchnorm: false
+
+augmentation:
+  name: light_head_finetuning
+  horizontal_flip: 0.3
+  rotation: 5
+
+sampler:
+  name: random
+
+dataloader:
+  batch_size: 32
+  num_workers: 2
+  pin_memory: true
+
+advanced:
+  protocol: head_finetuning_ensemble
+  checkpoints:
+    stage1_path: checkpoints/advanced_classification/stage1_focal.pth
+    stage2_path: checkpoints/advanced_classification/stage2_hard_negative.pth
+  threshold_tuning:
+    start: 0.10
+    stop: 0.90
+    step: 0.005
+    min_recall: 0.99
+    fallback_recall: 0.97
+    objective: max_normal_recall
+  tta:
+    enabled: true
+    image_size: 224
+    rotation: 5
+    brightness_delta: 0.1
+    scale: 1.1
+  temperature_scaling:
+    enabled: true
+    initial_temperature: 1.5
+    lr: 0.01
+    max_iter: 100
+  head_finetuning:
+    enabled: true
+    normal_alpha_candidates: [3.0, 5.0, 8.0]
+    pneumonia_alpha: 0.5
+    training:
+      epochs: 15
+      loss:
+        name: focal
+        gamma: 2.0
+        alpha_mode: outside
+      optimizer:
+        name: adam
+        learning_rate: 0.001
+        weight_decay: 0.0001
+      scheduler:
+        name: cosine
+        t_max: 15
+      early_stopping:
+        selection: recall_constrained
+        monitor: val_f1
+        mode: max
+        fallback_monitor: val_specificity
+        fallback_mode: max
+        patience: 0
+        constraints:
+          - metric: val_recall
+            operator: ">="
+            value: 0.99
+  ensemble:
+    enabled: true
+    weights: [0.2, 0.3, 0.4, 0.5]
+    min_recall: 0.99
+  model_selection:
+    min_recall: 0.99
+    min_specificity: 0.85
+    min_accuracy: 0.92

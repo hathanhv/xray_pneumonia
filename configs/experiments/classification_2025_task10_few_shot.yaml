@@ -1,0 +1,26 @@
+defaults:
+  - classification_2025_task10_refined_roi.yaml
+  - ../augmentations/strong.yaml
+
+experiment:
+  name: classification_2025_task10_few_shot
+
+dataset:
+  few_shot:
+    enabled: true
+    shots_per_class: 10
+    seed: 42
+
+model:
+  finetune_mode: last_blocks
+  unfreeze_blocks: 3
+  freeze_batchnorm: true
+  dropout: 0.3
+
+training:
+  epochs: 20
+  monitor: val_f1
+  early_stopping_patience: 6
+  optimizer:
+    learning_rate: 0.00005
+    weight_decay: 0.0001

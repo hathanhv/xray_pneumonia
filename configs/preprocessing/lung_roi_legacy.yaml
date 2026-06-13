@@ -1,0 +1,20 @@
+lung_segmentation:
+  postprocess:
+    keep_components: 2
+    fill_holes: true
+
+  crop:
+    pad_left: 90
+    pad_right: 90
+    pad_top: 60
+    pad_bottom: 8
+    max_bottom_ratio: 0.75
+
+  qc:
+    min_mask_area_ratio: 0.06
+    max_mask_area_ratio: 0.65
+    min_bbox_area_ratio: 0.12
+    max_bbox_area_ratio: 0.75
+    max_bbox_bottom_ratio: 0.82
+    max_bbox_height_ratio: 0.78
+    warning_mask_center_y_ratio: 0.58

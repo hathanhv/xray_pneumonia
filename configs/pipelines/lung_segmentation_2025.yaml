@@ -1,0 +1,26 @@
+defaults:
+  - base/default
+  - models/lung_segmentation
+  - preprocessing/lung_roi_legacy
+
+experiment:
+  name: lung_segmentation_2025_inference
+
+input:
+  images_dir: data/lung_seg_input/2025_all/images
+  manifest_path: data/lung_seg_input/2025_all/metadata.csv
+  filename_column: new_filename
+  original_path_column: original_path
+  split_column: split
+  class_column: class
+
+lung_segmentation:
+  output:
+    output_dir: data/lung_seg_outputs/2025_all
+    save_mask: true
+    save_crop: true
+    save_overlay: true
+    overlay_alpha: 0.35
+
+report:
+  qc_report_path: data/lung_seg_outputs/2025_all/qc_report_2025.csv

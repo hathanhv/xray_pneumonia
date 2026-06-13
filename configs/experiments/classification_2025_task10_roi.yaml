@@ -1,0 +1,6 @@
+defaults:
+  - classification_2025_task10_base.yaml
+  - ../preprocessing/lung_roi.yaml
+
+experiment:
+  name: classification_2025_task10_roi

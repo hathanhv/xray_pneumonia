@@ -1,0 +1,41 @@
+defaults:
+  - ../base/default.yaml
+  - ../models/mobilenet_v2.yaml
+  - ../training/classification_core.yaml
+
+experiment:
+  name: classification_2025_task10_base
+
+seed: 42
+return_metadata: true
+
+evaluation:
+  protocol: held_out_validation
+
+dataset:
+  name: xray_2025_task10
+  manifest_path: data/manifests/classification_2025_task10.csv
+
+input:
+  grayscale: true
+  normalize: true
+
+model:
+  pretrained: false
+  init_checkpoint_path: checkpoints/pneumonia_classifier/pneumonia_classifier.pth
+  dropout: 0.2
+  finetune_mode: full
+  freeze_batchnorm: false
+
+augmentation:
+  name: baseline
+  horizontal_flip: 0.5
+  rotation: 7
+
+sampler:
+  name: random
+
+dataloader:
+  batch_size: 16
+  num_workers: 0
+  pin_memory: true

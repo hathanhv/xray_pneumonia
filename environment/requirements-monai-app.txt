@@ -1,0 +1,10 @@
+-r ../requirements.txt
+
+Pillow>=10.0
+SimpleITK>=2.3
+fastapi>=0.115
+matplotlib>=3.8
+monailabel==0.8.5
+python-multipart>=0.0.9
+requests>=2.31
+uvicorn>=0.30

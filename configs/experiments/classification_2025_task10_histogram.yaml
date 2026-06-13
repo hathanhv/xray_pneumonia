@@ -1,0 +1,13 @@
+defaults:
+  - classification_2025_task10_base.yaml
+
+experiment:
+  name: classification_2025_task10_histogram
+
+preprocessing:
+  name: composite
+  strategies:
+    - name: histogram_matching
+      reference_path: data/references/histogram_reference.png
+    - name: resize
+      size: 224

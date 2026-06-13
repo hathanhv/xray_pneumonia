@@ -1,0 +1,6 @@
+image_path,legacy_predicted_mask_path,corrected_mask_path,model_name
+data/qc/fail_qc/images/2025_test_NORMAL_000226.jpg,data/qc/fail_qc/predicted_masks/2025_test_NORMAL_000226_mask.png,data/qc/corrected/masks/2025_test_NORMAL_000226_mask.png,lung_segmentation
+data/qc/fail_qc/images/2025_test_NORMAL_000232.jpg,data/qc/fail_qc/predicted_masks/2025_test_NORMAL_000232_mask.png,data/qc/corrected/masks/2025_test_NORMAL_000232_mask.png,lung_segmentation
+data/qc/fail_qc/images/2025_test_NORMAL_000235.jpg,data/qc/fail_qc/predicted_masks/2025_test_NORMAL_000235_mask.png,data/qc/corrected/masks/2025_test_NORMAL_000235_mask.png,lung_segmentation
+data/qc/fail_qc/images/2025_test_NORMAL_000237.jpg,data/qc/fail_qc/predicted_masks/2025_test_NORMAL_000237_mask.png,data/qc/corrected/masks/2025_test_NORMAL_000237_mask.png,lung_segmentation
+data/qc/fail_qc/images/2025_test_NORMAL_000238.jpg,data/qc/fail_qc/predicted_masks/2025_test_NORMAL_000238_mask.png,data/qc/corrected/masks/2025_test_NORMAL_000238_mask.png,lung_segmentation

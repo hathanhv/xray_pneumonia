@@ -1,0 +1,19 @@
+defaults:
+  - classification_2025_task10_refined_roi.yaml
+  - ../augmentations/strong.yaml
+
+experiment:
+  name: classification_2025_task10_full_finetune
+
+model:
+  finetune_mode: full
+  freeze_batchnorm: false
+  dropout: 0.3
+
+training:
+  epochs: 15
+  monitor: val_f1
+  early_stopping_patience: 5
+  optimizer:
+    learning_rate: 0.00002
+    weight_decay: 0.0001
