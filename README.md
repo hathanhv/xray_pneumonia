@@ -17,6 +17,11 @@ entrypoints under `scripts/`, and experiment definitions under `configs/`.
 | Manual mask refinement | `scripts/run_slicer_refinement.py` | [3D Slicer Guide](docs/slicer_guide.md) |
 | Full orchestration and report | `scripts/run_full_pipeline.py` | [Project Architecture](docs/project_architecture.md) |
 
+## Demo Videos
+
+- [Lung segmentation demo](docs/assets/videos/lung_segmentation.mp4)
+- [Full mode demo: segmentation, refinement, and classification](docs/assets/videos/full_mode.mp4)
+
 ## Environment
 
 The validated environment uses Python 3.10. Install the core dependencies:
