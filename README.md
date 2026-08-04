@@ -7,6 +7,10 @@ AmbiGAN boundary generation, and Hubris-aware training.
 The project is config-driven. Production code lives under `src/`, executable
 entrypoints under `scripts/`, and experiment definitions under `configs/`.
 
+## Demo
+
+![X-ray pneumonia workflow showcase](showcase.gif)
+
 ## Main Workflows
 
 | Workflow | Entrypoint | Guide |
