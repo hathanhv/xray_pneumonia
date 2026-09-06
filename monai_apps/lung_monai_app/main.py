@@ -2,7 +2,9 @@ import logging
 from pathlib import Path
 from typing import Dict
 
+from lib.configs.anatomy import AnatomyConfig
 from lib.configs.classifier import ClassifierConfig
+from lib.configs.lesion import LesionConfig
 from lib.configs.lung_segmentation import LungSegmentationConfig
 from lib.strategies.review import ReviewFirst, ReviewRandom
 from monailabel.interfaces.app import MONAILabelApp
@@ -33,7 +35,12 @@ class MyApp(MONAILabelApp):
             for name in str(requested_value).split(",")
             if name.strip()
         }
-        supported_models = {"lung_segmentation", "classifier"}
+        supported_models = {
+            "lung_segmentation",
+            "classifier",
+            "anatomy_segmentation",
+            "lesion_localization",
+        }
         if "all" in requested_models:
             requested_models = supported_models
         invalid_models = requested_models - supported_models
@@ -64,6 +71,24 @@ class MyApp(MONAILabelApp):
             if "classifier" in requested_models
             else None
         )
+        self.anatomy_config = (
+            AnatomyConfig(
+                app_dir=self.app_dir,
+                studies=self.studies,
+                conf=self.conf,
+            )
+            if "anatomy_segmentation" in requested_models
+            else None
+        )
+        self.lesion_config = (
+            LesionConfig(
+                app_dir=self.app_dir,
+                studies=self.studies,
+                conf=self.conf,
+            )
+            if "lesion_localization" in requested_models
+            else None
+        )
 
         super().__init__(
             app_dir=str(self.app_dir),
@@ -86,6 +111,12 @@ class MyApp(MONAILabelApp):
         if self.classifier_config:
             logger.info("Registering inference model: classifier")
             infers["classifier"] = self.classifier_config.infer()
+        if self.anatomy_config:
+            logger.info("Registering inference model: anatomy_segmentation")
+            infers["anatomy_segmentation"] = self.anatomy_config.infer()
+        if self.lesion_config:
+            logger.info("Registering inference model: lesion_localization")
+            infers["lesion_localization"] = self.lesion_config.infer()
         return infers
 
     def init_trainers(self) -> Dict[str, TrainTask]:

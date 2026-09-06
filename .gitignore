@@ -18,6 +18,7 @@ monai_apps/**/logs/
 
 outputs/
 notebooks/legacy/
+kaggle_anatomy_lesion_detection
 
 *.nii.gz
 *.pth

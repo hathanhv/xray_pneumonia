@@ -52,7 +52,12 @@ Segmentation and classifier:
 monailabel start_server `
   --app monai_apps/lung_monai_app `
   --studies data/qc/fail_qc/images `
-  --conf models all
+  --conf models all `
+  --conf anatomy_device cpu `
+  --conf anatomy_num_threads 2 `
+  --conf lesion_device cpu `
+  --conf lesion_num_threads 2 `
+  --conf lesion_shift_pixels 64
 ```
 
 An explicit list is also valid:
@@ -60,6 +65,12 @@ An explicit list is also valid:
 ```powershell
 --conf models lung_segmentation,classifier
 ```
+
+For the anatomy and lesion models, the `*_num_threads` settings control how much
+CPU PyTorch can use. Keep them at `2` while working in Slicer; use `1` on a
+laptop under load, or raise them only when the desktop can spare the CPU.
+`lesion_shift_pixels=64` is the fastest MedicalPatchNet localization mode.
+Use `16` only when you want smoother lesion maps and can tolerate a slower run.
 
 Default server URL:
 

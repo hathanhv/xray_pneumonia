@@ -27,8 +27,22 @@ Start the server:
 monailabel start_server `
   --app monai_apps/lung_monai_app `
   --studies data/qc/fail_qc/images `
-  --conf models all
+  --conf models all `
+  --conf anatomy_device cpu `
+  --conf anatomy_num_threads 2 `
+  --conf lesion_device cpu `
+  --conf lesion_num_threads 2 `
+  --conf lesion_shift_pixels 64
 ```
+
+The anatomy model (`ianpan/chest-x-ray-basic`) and MedicalPatchNet lesion model
+are heavier than the lung segmentation and classifier tasks. Keep them on CPU
+first for a more predictable desktop while using Slicer. If you prefer faster
+inference and your GPU has enough free memory, change `anatomy_device` and/or
+`lesion_device` to `cuda`. If CPU inference still makes the desktop lag, lower
+the relevant `*_num_threads` to `1`; if the machine is idle and you want faster
+runs, raise them gradually. `lesion_shift_pixels=64` is the fast 8x8 patch map;
+`16` is smoother but can be several times slower.
 
 In Slicer:
 
@@ -48,25 +62,28 @@ Accepted formats are `.nii.gz`, `.nii`, `.nrrd`, and `.nhdr`. Keep the image
 stem in the exported filename. Common suffixes such as `_label`, `-label`, and
 `.seg` are normalized by the importer.
 
-## Pneumonia Predictor Module
+## Chest Analyzer Module
 
 The scripted module is located at:
 
 ```text
-pneumonia_slicer_app/slicer_module/PneumoniaPredictor/
+pneumonia_slicer_app/slicer_module/ChestAnalyzer/
 ```
 
 Add its parent directory to Slicer's additional module paths, restart Slicer,
-and open `Pneumonia Predictor`. The module depends on the MONAI Label extension.
+and open `Chest Analyzer`. The module depends on the MONAI Label extension.
 
 Workflow:
 
-1. Open Pneumonia Predictor before selecting a MONAI sample.
+1. Open **Chest Analyzer** before selecting a MONAI sample.
 2. Keep server URL `http://127.0.0.1:8000`.
 3. Use Mode 1 to open MONAI Label segmentation.
 4. Select the X-ray and corrected segmentation.
-5. Run Mode 2 classification.
-6. Review probabilities and the Grad-CAM overlay.
+5. Run **Mode 2** — Classify + Anatomy Segmentation:
+   - **Red panel**: GradCAM overlay (NORMAL/PNEUMONIA heatmap)
+   - **Green panel**: Anatomy overlay (right lung=blue, left lung=cyan, heart=red)
+   - **Yellow panel**: Original X-ray
+6. Review probabilities, Grad-CAM overlay, anatomy confidence, and CTR.
 
 When a mask is selected, classification uses the refined lung ROI. Without a
 mask, it uses the source image.

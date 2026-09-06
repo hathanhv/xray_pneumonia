@@ -81,6 +81,131 @@ outputs/full_pipeline/final_report.md
 outputs/full_pipeline/final_report.html
 ```
 
+## 3D Slicer Visualization And Editing
+
+Use this workflow when you want to review X-rays in 3D Slicer, edit the lung
+mask, and run the ChestAnalyze view with GradCAM, anatomy, and lesion
+visualization.
+
+### 1. Start The MONAI Label Server
+
+From the project root:
+
+```powershell
+.\scripts\start_monai_lung_app.ps1
+```
+
+The script uses:
+
+```text
+C:\Users\lenovo\.conda\envs\lung_app\python.exe
+```
+
+and starts the MONAI Label app with:
+
+```text
+--app monai_apps\lung_monai_app
+--studies data\qc\fail_qc\images
+--conf models all
+--conf anatomy_device cpu
+--conf anatomy_num_threads 2
+--conf lesion_device cpu
+--conf lesion_num_threads 2
+--conf lesion_shift_pixels 64
+--conf lesion_mask_logit_threshold 1.0
+```
+
+To make `Next Sample` show images from a different folder, change the
+`--studies` path in [scripts/start_monai_lung_app.ps1](scripts/start_monai_lung_app.ps1).
+Then restart the server.
+
+### 2. Load The Slicer Module
+
+Open 3D Slicer and add this module directory to Slicer's additional module
+paths:
+
+```text
+pneumonia_slicer_app\slicer_module
+```
+
+Restart Slicer or reload modules, then open **Chest Analyzer**.
+
+### 3. Connect And Load A Case
+
+In Slicer:
+
+1. Set MONAI Label server URL to:
+
+   ```text
+   http://127.0.0.1:8000
+   ```
+
+2. Click **Mode 1: Open MONAI Label lung segmentation**.
+3. In the MONAI Label panel, connect to the server.
+4. Click **Next Sample** to load an X-ray from the `--studies` folder.
+5. Select `lung_segmentation` and run inference.
+
+### 4. Edit The Lung Mask
+
+Use **Segment Editor** to fix the lung mask. After editing, submit/save the
+label through MONAI Label so the corrected mask can be reused.
+
+Corrected labels are stored under the MONAI Label studies folder, typically:
+
+```text
+data\qc\fail_qc\images\labels\final
+```
+
+### 5. Run ChestAnalyze
+
+Go back to **Chest Analyzer**, select:
+
+- **X-ray volume**: the loaded chest X-ray.
+- **Optional edited lung mask**: the edited segmentation node.
+
+Then click:
+
+```text
+Mode 2: ChestAnalyze
+```
+
+The custom layout shows:
+
+```text
+Yellow top panel  : MedicalPatchNet lesion visualizations
+Red bottom panel  : classifier GradCAM
+Green bottom panel: anatomy segmentation overlay
+```
+
+Anatomy and lesion inference use the crop/bbox derived from the selected edited
+lung mask when available.
+
+### 6. Outputs And Logs
+
+ChestAnalyze writes the structured JSON draft to:
+
+```text
+C:\Users\lenovo\AppData\Local\Temp\chest_analyze_report.json
+```
+
+Debug images for lesion visualization are written to:
+
+```text
+C:\Users\lenovo\AppData\Local\Temp\ChestAnalyzerDebug
+```
+
+Slicer-side debug logs are written to:
+
+```text
+pneumonia_slicer_app\slicer_module\ChestAnalyzer\ChestAnalyzer_debug.log
+```
+
+Anatomy inference logs are written to:
+
+```text
+monai_apps\lung_monai_app\anatomy_infer_debug.log
+```
+
 ## Tests
 
 ```powershell
