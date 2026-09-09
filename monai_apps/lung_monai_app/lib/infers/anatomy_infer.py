@@ -149,11 +149,27 @@ class AnatomySegmentationInfer:
             if not hasattr(
                 modeling_utils.PreTrainedModel, "all_tied_weights_keys"
             ):
+                # transformers 5.x assigns to ``self.all_tied_weights_keys`` during
+                # post_init().  A read-only property breaks that assignment with
+                # ``AttributeError: can't set attribute``.  Provide a writable
+                # compatibility property instead, while keeping the dict-style
+                # interface expected by the ianpan remote model code.
+                def _get_all_tied_weights_keys(instance):
+                    return instance.__dict__.get(
+                        "_chest_analyzer_all_tied_weights_keys", {}
+                    )
+
+                def _set_all_tied_weights_keys(instance, value):
+                    instance.__dict__[
+                        "_chest_analyzer_all_tied_weights_keys"
+                    ] = value
+
                 modeling_utils.PreTrainedModel.all_tied_weights_keys = property(
-                    lambda self: {}  # dict, not list — .keys() must work
+                    _get_all_tied_weights_keys,
+                    _set_all_tied_weights_keys,
                 )
                 logger.debug(
-                    "[anatomy_infer] Applied all_tied_weights_keys patch (dict)"
+                    "[anatomy_infer] Applied writable all_tied_weights_keys patch"
                 )
         except Exception as patch_err:
             logger.warning(

@@ -182,8 +182,12 @@ class LungSegmentationInfer:
                 image = cv2.cvtColor(image, cv2.COLOR_BGRA2BGR)
             rgb = cv2.cvtColor(image, cv2.COLOR_BGR2RGB)
 
-        resized = cv2.resize(rgb, (self.img_size, self.img_size), interpolation=cv2.INTER_AREA)
-        resized = resized.astype(np.float32) / 255.0
+        resized = cv2.resize(
+            rgb,
+            (self.img_size, self.img_size),
+            interpolation=cv2.INTER_AREA,
+        )
+        resized = self._normalize_to_unit_interval(resized)
 
         tensor = (
             self.torch.from_numpy(resized)
@@ -206,6 +210,51 @@ class LungSegmentationInfer:
         )
 
         return self._clean_mask(mask_np)
+
+    @staticmethod
+    def _normalize_to_unit_interval(image):
+        """Match 8-bit training input while supporting uploaded DICOM/NIfTI.
+
+        JPG/PNG studies used during training are uint8 and must keep the exact
+        historical ``/ 255`` preprocessing. Slicer uploads DICOM volumes as
+        NIfTI while preserving their 12/16-bit pixel range (for example
+        0..4095); dividing those values by 255 causes severe saturation and a
+        near-full-image lung mask. Robust percentile scaling maps medical
+        volume pixels back to the same 0..1 range without letting isolated
+        outliers control the contrast.
+        """
+        array = np.asarray(image)
+        values = array.astype(np.float32)
+        finite = np.isfinite(values)
+        if not finite.any():
+            raise ValueError("Input image contains no finite pixel values")
+
+        finite_values = values[finite]
+        minimum = float(finite_values.min())
+        maximum = float(finite_values.max())
+
+        if minimum >= 0.0 and maximum <= 1.0:
+            normalized = values
+        elif minimum >= 0.0 and maximum <= 255.0:
+            normalized = values / 255.0
+        else:
+            lower, upper = np.percentile(finite_values, [0.5, 99.5])
+            lower = float(lower)
+            upper = float(upper)
+            if upper <= lower:
+                lower, upper = minimum, maximum
+            if upper <= lower:
+                normalized = np.zeros_like(values, dtype=np.float32)
+            else:
+                normalized = (values - lower) / (upper - lower)
+
+        normalized = np.nan_to_num(
+            normalized,
+            nan=0.0,
+            posinf=1.0,
+            neginf=0.0,
+        )
+        return np.clip(normalized, 0.0, 1.0).astype(np.float32)
 
     def _clean_mask(self, mask):
         binary = (mask > 0).astype(np.uint8)

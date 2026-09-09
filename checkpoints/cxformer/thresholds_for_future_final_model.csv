@@ -1,0 +1,15 @@
+class_id,class_name,threshold_for_future_model
+0,Aortic enlargement,0.44
+1,Atelectasis,0.36
+2,Calcification,0.38
+3,Cardiomegaly,0.46
+4,Consolidation,0.4
+5,ILD,0.38
+6,Infiltration,0.39
+7,Lung Opacity,0.39
+8,Nodule/Mass,0.41
+9,Other lesion,0.33
+10,Pleural effusion,0.42
+11,Pleural thickening,0.38
+12,Pneumothorax,0.4
+13,Pulmonary fibrosis,0.42

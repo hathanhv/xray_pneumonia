@@ -4,8 +4,9 @@ from typing import Dict
 
 from lib.configs.anatomy import AnatomyConfig
 from lib.configs.classifier import ClassifierConfig
-from lib.configs.lesion import LesionConfig
+from lib.configs.cxformer_pathology import CXformerPathologyConfig
 from lib.configs.lung_segmentation import LungSegmentationConfig
+from lib.configs.lesion import LesionConfig
 from lib.strategies.review import ReviewFirst, ReviewRandom
 from monailabel.interfaces.app import MONAILabelApp
 from monailabel.interfaces.tasks.infer_v2 import InferTask
@@ -18,10 +19,10 @@ logger = logging.getLogger(__name__)
 
 
 class MyApp(MONAILabelApp):
-    """
-    Unified MONAI Label app for chest X-ray segmentation and classification.
+    """Unified MONAI Label app for chest X-ray analysis.
 
-    This app only exposes inference. It does not train or fine-tune models.
+    Inference-only app. MedicalPatchNet keeps the original lesion-localization
+    branch; CXFormer is added as a separate 14-label result-only classifier.
     """
 
     def __init__(self, app_dir, studies, conf):
@@ -40,6 +41,7 @@ class MyApp(MONAILabelApp):
             "classifier",
             "anatomy_segmentation",
             "lesion_localization",
+            "cxformer_pathology",
         }
         if "all" in requested_models:
             requested_models = supported_models
@@ -89,6 +91,15 @@ class MyApp(MONAILabelApp):
             if "lesion_localization" in requested_models
             else None
         )
+        self.cxformer_config = (
+            CXformerPathologyConfig(
+                app_dir=self.app_dir,
+                studies=self.studies,
+                conf=self.conf,
+            )
+            if "cxformer_pathology" in requested_models
+            else None
+        )
 
         super().__init__(
             app_dir=str(self.app_dir),
@@ -96,10 +107,10 @@ class MyApp(MONAILabelApp):
             conf=self.conf,
             name="lung_monai_app",
             description=(
-                "Chest X-ray lung segmentation and pneumonia "
-                "classification inference app"
+                "Chest X-ray lung segmentation, binary classifier, anatomy segmentation, "
+                "MedicalPatchNet lesion localization, and CXFormer 14-label classification"
             ),
-            version="0.2.0",
+            version="0.4.0",
             labels={"lung": 1},
         )
 
@@ -117,6 +128,9 @@ class MyApp(MONAILabelApp):
         if self.lesion_config:
             logger.info("Registering inference model: lesion_localization")
             infers["lesion_localization"] = self.lesion_config.infer()
+        if self.cxformer_config:
+            logger.info("Registering inference model: cxformer_pathology")
+            infers["cxformer_pathology"] = self.cxformer_config.infer()
         return infers
 
     def init_trainers(self) -> Dict[str, TrainTask]:
@@ -140,7 +154,10 @@ def main():
     parser.add_argument(
         "--model",
         default="lung_segmentation",
-        help="lung_segmentation, classifier, all, or a comma-separated list",
+        help=(
+            "lung_segmentation, classifier, anatomy_segmentation, lesion_localization, "
+            "cxformer_pathology, all, or a comma-separated list"
+        ),
     )
     args = parser.parse_args()
 

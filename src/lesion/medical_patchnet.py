@@ -99,7 +99,7 @@ class MedicalPatchNetConfig:
     mask_logit_threshold: float = 1.0
     top_k: int = 5
     include_overlay: bool = True
-    flip_display_vertical: bool = True
+    flip_display_vertical: bool = False
 
 
 @dataclass(frozen=True)
@@ -112,6 +112,7 @@ class MedicalPatchNetResult:
     elapsed_s: float
     shift_pixels: int
     forward_grid_count: int
+    probability_threshold: float
     overlay_base64: Optional[str] = None
 
     def to_dict(self) -> Dict:
@@ -129,6 +130,7 @@ class MedicalPatchNetResult:
             "elapsed_s": self.elapsed_s,
             "shift_pixels": self.shift_pixels,
             "forward_grid_count": self.forward_grid_count,
+            "probability_threshold": self.probability_threshold,
             "overlay_base64": self.overlay_base64,
             "model": "patrick-w/MedicalPatchNet",
             "localization_method": "patch_based_self_explainable_map",
@@ -156,7 +158,12 @@ class MedicalPatchNetService:
         maps_np = patch_maps.detach().cpu().numpy()
         findings = self._build_findings(probabilities, maps_np, image_orig.size, crop_box)
         overlay_base64 = None
-        if self.config.include_overlay and findings:
+        # Keep the original MedicalPatchNet Yellow-panel behavior: always render
+        # the top-k patch-evidence maps when overlay display is enabled, even if
+        # no class crosses the reporting threshold. The findings list still uses
+        # probability_threshold for PRESENT/ABSENT semantics; this overlay is
+        # visualization only.
+        if self.config.include_overlay:
             overlay_base64 = self._paper_style_overlay_to_base64(
                 image_orig,
                 probabilities,
@@ -177,6 +184,7 @@ class MedicalPatchNetService:
             elapsed_s=elapsed_s,
             shift_pixels=self.config.shift_pixels,
             forward_grid_count=(self.config.patch_size // self.config.shift_pixels) ** 2,
+            probability_threshold=float(self.config.probability_threshold),
             overlay_base64=overlay_base64,
         )
 
@@ -347,17 +355,18 @@ class MedicalPatchNetService:
         findings = []
         for class_idx in ranked:
             probability = float(probabilities[class_idx])
-            if probability < self.config.probability_threshold and len(findings) >= self.config.top_k:
+            pathology = PATHOLOGY_NAMES[int(class_idx)]
+            if probability < self.config.probability_threshold:
                 break
+            if pathology == "No Finding":
+                continue
             signed_map = maps_np[int(class_idx)]
             mask_crop = signed_map > self.config.mask_logit_threshold
             findings.append(
                 {
-                    "finding": PATHOLOGY_NAMES[int(class_idx)],
+                    "finding": pathology,
                     "class_index": int(class_idx),
-                    "status": "present"
-                    if probability >= self.config.probability_threshold
-                    else "ranked",
+                    "status": "present",
                     "probability": probability,
                     "localization": {
                         "type": "patch_based_localization",
@@ -367,8 +376,6 @@ class MedicalPatchNetService:
                     },
                 }
             )
-            if len(findings) >= self.config.top_k:
-                break
         return findings
 
     @staticmethod
@@ -417,11 +424,36 @@ class MedicalPatchNetService:
         import matplotlib.colors as mcolors
         import matplotlib.pyplot as plt
 
+        # The montage is a visualization, while probabilities and patch maps were
+        # already computed at the model's native 512 px resolution.  Building five
+        # RGBA overlays at the original DICOM resolution (often 3k x 3k) can require
+        # several hundred MB per panel.  Render the montage on a bounded canvas and
+        # keep the original model outputs unchanged.
+        source_w, source_h = gray_img_pil.size
+        display_image = gray_img_pil.convert("L")
+        display_crop_box = tuple(int(value) for value in crop_box)
+        overlay_max_side = 768
+        if max(source_w, source_h) > overlay_max_side:
+            scale = float(overlay_max_side) / float(max(source_w, source_h))
+            display_w = max(1, int(round(source_w * scale)))
+            display_h = max(1, int(round(source_h * scale)))
+            display_image = display_image.resize(
+                (display_w, display_h),
+                resample=Image.Resampling.BILINEAR,
+            )
+            left, top, right, bottom = crop_box
+            display_crop_box = (
+                max(0, min(display_w - 1, int(round(left * scale)))),
+                max(0, min(display_h - 1, int(round(top * scale)))),
+                max(1, min(display_w, int(round(right * scale)))),
+                max(1, min(display_h, int(round(bottom * scale)))),
+            )
+
         top_indices = np.argsort(probabilities)[::-1][: self.config.top_k]
         valid_mask = self._paste_crop_map_to_original(
             np.ones((self.config.image_size, self.config.image_size), dtype=np.float32),
-            gray_img_pil.size,
-            crop_box,
+            display_image.size,
+            display_crop_box,
         ) > 0
 
         fig, axes = plt.subplots(
@@ -437,11 +469,11 @@ class MedicalPatchNetService:
             pathology = PATHOLOGY_NAMES[int(idx)]
             signed_original = self._paste_crop_map_to_original(
                 maps_np[int(idx)],
-                gray_img_pil.size,
-                crop_box,
+                display_image.size,
+                display_crop_box,
             )
             overlay = self._signed_overlay_array(
-                gray_img_pil,
+                display_image,
                 signed_original,
                 clip_value=clip_value,
                 valid_mask=valid_mask,
@@ -511,14 +543,21 @@ class MedicalPatchNetService:
         alpha=0.58,
         valid_mask=None,
     ):
-        gray = np.array(gray_img_pil.convert("L"))
+        gray = np.asarray(gray_img_pil.convert("L"), dtype=np.uint8)
         base = cv2.cvtColor(gray, cv2.COLOR_GRAY2RGB).astype(np.float32) / 255.0
-        signed = np.clip(signed_map / clip_value, -1.0, 1.0)
+        signed = np.asarray(signed_map, dtype=np.float32) / np.float32(clip_value)
+        signed = np.clip(signed, -1.0, 1.0)
         try:
             import matplotlib.pyplot as plt
 
-            rgba = plt.get_cmap("RdBu_r")((signed + 1.0) / 2.0)
-            color = rgba[..., :3].astype(np.float32)
+            # Build only a tiny 256-color LUT.  Calling the colormap directly on
+            # a 3k image creates a float64 RGBA array (~288 MiB at 3072 x 3072).
+            lut = plt.get_cmap("RdBu_r")(
+                np.linspace(0.0, 1.0, 256, dtype=np.float32),
+                bytes=True,
+            )[:, :3]
+            color_indices = np.rint((signed + 1.0) * 127.5).astype(np.uint8)
+            color = lut[color_indices].astype(np.float32) / 255.0
         except Exception:
             positive = np.clip(signed, 0.0, 1.0)
             negative = np.clip(-signed, 0.0, 1.0)
@@ -529,6 +568,8 @@ class MedicalPatchNetService:
         strength = np.clip(np.abs(signed), 0.0, 1.0)
         local_alpha = alpha * np.sqrt(strength)[..., None]
         if valid_mask is not None:
-            local_alpha *= valid_mask.astype(np.float32)[..., None]
+            local_alpha *= np.asarray(valid_mask, dtype=np.float32)[..., None]
         blended = base * (1.0 - local_alpha) + color * local_alpha
-        return np.clip(blended, 0, 1)
+        # Matplotlib retains every panel until savefig(); uint8 uses one quarter
+        # of the memory of float32 for those retained images.
+        return np.rint(np.clip(blended, 0, 1) * 255.0).astype(np.uint8)

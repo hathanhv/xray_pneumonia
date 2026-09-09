@@ -3,14 +3,16 @@ ChestAnalyzer — 3D Slicer scripted module.
 
 Integrates MONAI Label for:
   Mode 1 — Open MONAI Label lung segmentation for manual refinement
-  Mode 2 — ChestAnalyze: classification + anatomy + lesion localization
-            and display results in a 3-panel layout:
-              Red    → GradCAM overlay (classification)
+  Mode 2 — ChestAnalyze: existing NORMAL/PNEUMONIA classification + anatomy +
+            original MedicalPatchNet lesion localization + CXFormer 14-label classification.
+            Three image panels stay as before:
+              Red    → GradCAM overlay (binary classification)
               Green  → Anatomy overlay (left lung / right lung / heart)
-              Yellow → MedicalPatchNet paper-style lesion display
+              Yellow → MedicalPatchNet lesion-localization overlay
 """
 
 import base64
+import html
 import json
 import os
 import tempfile
@@ -39,8 +41,8 @@ class ChestAnalyzer(ScriptedLoadableModule):
         self.parent.contributors = ["X-ray Pneumonia Project"]
         self.parent.helpText = (
             "Use MONAI Label for lung segmentation, refine the mask, then run "
-            "NORMAL/PNEUMONIA classification + anatomy segmentation with a "
-            "three-panel display."
+            "classification + anatomy segmentation + MedicalPatchNet lesion localization, "
+            "with CXFormer 14-label results shown in the left panel."
         )
         self.parent.acknowledgementText = ""
 
@@ -51,7 +53,7 @@ class ChestAnalyzer(ScriptedLoadableModule):
 
 # Custom Slicer layout: Yellow (top full) + Red/Green (bottom)
 _CHEST_ANALYZER_LAYOUT_ID = 950
-_CHEST_ANALYZER_DEBUG_BUILD = "debug-2026-09-06-lesion-png-loader"
+_CHEST_ANALYZER_DEBUG_BUILD = "cxformer-fusion-2026-09-09"
 _CHEST_ANALYZER_LAYOUT_XML = """
 <layout type="vertical" split="true">
   <item splitSize="520">
@@ -200,26 +202,47 @@ class ChestAnalyzerWidget(ScriptedLoadableModuleWidget):
         ):
             self.layout.addWidget(lbl)
 
-        # -- Lesion localization results --------------------------------
+        # -- Original MedicalPatchNet lesion localization ----------------
         sep3 = qt.QFrame()
         sep3.setFrameShape(qt.QFrame.HLine)
         self.layout.addWidget(sep3)
 
-        lesionHeader = qt.QLabel("Lesion Localization")
+        lesionHeader = qt.QLabel("MedicalPatchNet — Lesion Localization")
         lesionHeader.setStyleSheet("font-size: 14px; font-weight: bold;")
         self.layout.addWidget(lesionHeader)
 
         self.lesionStatusLabel = qt.QLabel("Status: -")
         self.lesionTopLabel = qt.QLabel("  Top finding: -")
         self.lesionTimingLabel = qt.QLabel("  Runtime:     -")
-        self.reportPathLabel = qt.QLabel("Report JSON: -")
         for lbl in (
             self.lesionStatusLabel,
             self.lesionTopLabel,
             self.lesionTimingLabel,
-            self.reportPathLabel,
         ):
             self.layout.addWidget(lbl)
+
+        # -- CXFormer result-only multi-label classification ---------------
+        sep4 = qt.QFrame()
+        sep4.setFrameShape(qt.QFrame.HLine)
+        self.layout.addWidget(sep4)
+
+        cxformerHeader = qt.QLabel("CXFormer — 14-label Classification")
+        cxformerHeader.setStyleSheet("font-size: 14px; font-weight: bold;")
+        self.layout.addWidget(cxformerHeader)
+
+        self.cxformerStatusLabel = qt.QLabel("Status: -")
+        self.cxformerTimingLabel = qt.QLabel("  Runtime:     -")
+        self.cxformerProbabilityTable = qt.QTextBrowser()
+        self.cxformerProbabilityTable.minimumHeight = 330
+        self.cxformerProbabilityTable.setHtml(
+            "<p>Run ChestAnalyze to display 14-label CXFormer probabilities and thresholds.</p>"
+        )
+        self.layout.addWidget(self.cxformerStatusLabel)
+        self.layout.addWidget(self.cxformerTimingLabel)
+        self.layout.addWidget(self.cxformerProbabilityTable)
+
+        self.reportPathLabel = qt.QLabel("Report JSON: -")
+        self.layout.addWidget(self.reportPathLabel)
 
         self.layout.addStretch(1)
 
@@ -253,21 +276,84 @@ class ChestAnalyzerWidget(ScriptedLoadableModuleWidget):
             or node.IsA("vtkMRMLVectorVolumeNode")
         ):
             return
+        if node.IsA("vtkMRMLLabelMapVolumeNode"):
+            return
         if node.GetName() in ("GradCAM_Overlay", "AnatomyOverlay", "LesionOverlay"):
             return
+        if (
+            node.GetAttribute("ChestAnalyzer.IsGradCAM") == "1"
+            or node.GetAttribute("ChestAnalyzer.IsAnatomy") == "1"
+            or node.GetAttribute("ChestAnalyzer.IsLesion") == "1"
+            or node.GetAttribute("PneumoniaPredictor.IsGradCAM") == "1"
+        ):
+            return
+
+        # DICOM volumes are sometimes added before storage metadata/pixel data
+        # are fully attached. Retry briefly instead of keeping the old study.
         qt.QTimer.singleShot(
-            750,
-            lambda volume_node=node: self.onSourceVolumeReady(volume_node),
+            400,
+            lambda volume_node=node: self.onSourceVolumeReady(volume_node, 0),
         )
 
-    def onSourceVolumeReady(self, volume_node):
+    def onSourceVolumeReady(self, volume_node, retry_count=0):
         if volume_node is None or volume_node.GetScene() is None:
             return
-        if not self.logic.is_xray_source(volume_node):
+
+        if (
+            volume_node.GetImageData() is None
+            or not self.logic.is_xray_source(volume_node)
+        ):
+            if retry_count < 6:
+                qt.QTimer.singleShot(
+                    400,
+                    lambda volume_node=volume_node, retry_count=retry_count + 1:
+                        self.onSourceVolumeReady(volume_node, retry_count),
+                )
             return
+
+        # A newly loaded study must immediately replace the previous study in
+        # all ChestAnalyzer panels.
+        self.logic.remove_gradcam_overlay()
+        self.logic.remove_anatomy_overlay()
+        self.logic.remove_lesion_overlay()
+
         self.logic.normalize_xray_orientation(volume_node, force=True)
         volume_node.SetAttribute("ChestAnalyzer.IsXraySource", "1")
         self.volumeSelector.setCurrentNode(volume_node)
+
+        # Show the newly loaded source immediately in all three panels.
+        self.logic.assign_panels(source_node=volume_node)
+        self.logic.debug_log(
+            "new source volume activated",
+            node_id=volume_node.GetID(),
+            node_name=volume_node.GetName(),
+            storage_file=(
+                volume_node.GetStorageNode().GetFileName()
+                if volume_node.GetStorageNode() else None
+            ),
+            dicom_instance_uids=volume_node.GetAttribute("DICOM.instanceUIDs"),
+        )
+
+        # Clear stale results from the previous study.
+        self.resultLabel.setText("Result: —")
+        self.resultLabel.setStyleSheet("font-size: 18px; font-weight: bold;")
+        self.confidenceLabel.setText("Confidence: —")
+        self.roiLabel.setText("ROI source: —")
+        self.predictedVolumeLabel.setText("Predicted volume: —")
+        self.anatomyStatusLabel.setText("Status: —")
+        self.rightLungLabel.setText("  Right lung confidence: —")
+        self.leftLungLabel.setText("  Left lung confidence:  —")
+        self.heartLabel.setText("  Heart confidence:      —")
+        self.ctrLabel.setText("  CTR:                   —")
+        self.lesionStatusLabel.setText("Status: -")
+        self.lesionTopLabel.setText("  Top finding: -")
+        self.lesionTimingLabel.setText("  Runtime:     -")
+        self.cxformerStatusLabel.setText("Status: -")
+        self.cxformerTimingLabel.setText("  Runtime:     -")
+        self.cxformerProbabilityTable.setHtml(
+            "<p>Run ChestAnalyze to display 14-label CXFormer probabilities and thresholds.</p>"
+        )
+        self.reportPathLabel.setText("Report JSON: -")
 
     def normalizeLoadedXrays(self):
         for node_class in (
@@ -278,7 +364,7 @@ class ChestAnalyzerWidget(ScriptedLoadableModuleWidget):
                 self.logic.normalize_xray_orientation(volume_node)
 
     def onPredict(self):
-        """Mode 2: ChestAnalyze classification + anatomy + lesion localization."""
+        """Mode 2: binary classifier + anatomy + MedicalPatchNet lesion + CXFormer result-only."""
         self.logic.remove_gradcam_overlay()
         self.logic.remove_anatomy_overlay()
         self.logic.remove_lesion_overlay()
@@ -302,6 +388,7 @@ class ChestAnalyzerWidget(ScriptedLoadableModuleWidget):
         classify_result = None
         anatomy_result = None
         lesion_result = None
+        cxformer_result = None
 
         # ── Classification ───────────────────────────────────────────
         try:
@@ -385,15 +472,14 @@ class ChestAnalyzerWidget(ScriptedLoadableModuleWidget):
                 traceback=traceback.format_exc(),
             )
 
-        # -- MedicalPatchNet lesion localization ----------------------
+        # -- Original MedicalPatchNet lesion localization ----------------
         try:
             self.lesionStatusLabel.setText("Status: Running ...")
             slicer.app.processEvents()
 
-            lesion_result = self.logic.run_lesion(
+            lesion_result = self.logic.run_medicalpatchnet_lesion(
                 volume_node=volume_node,
                 server_url=server_url,
-                bbox=anatomy_bbox,
             )
             lesion_node = self.logic.load_lesion_overlay(
                 lesion_result=lesion_result,
@@ -411,15 +497,53 @@ class ChestAnalyzerWidget(ScriptedLoadableModuleWidget):
             else:
                 self.lesionTopLabel.setText("  Top finding: None")
             self.lesionTimingLabel.setText(
-                f"  Runtime:     {lesion_result.get('elapsed_s', 0):.2f}s "
-                f"(shift={lesion_result.get('shift_pixels', '-')})"
+                f"  Runtime:     {lesion_result.get('elapsed_s', 0):.2f}s"
             )
 
         except Exception as error:
-            errors.append(f"Lesion localization failed: {error}")
+            errors.append(f"MedicalPatchNet lesion inference failed: {error}")
             self.lesionStatusLabel.setText("Status: ERROR")
             self.logic.debug_log(
-                "lesion failed",
+                "medicalpatchnet lesion failed",
+                error=repr(error),
+                traceback=traceback.format_exc(),
+            )
+
+        # -- CXFormer 14-label classification: results only ----------------
+        try:
+            self.cxformerStatusLabel.setText("Status: Running ...")
+            slicer.app.processEvents()
+
+            cxformer_result = self.logic.run_cxformer_multilabel(
+                volume_node=volume_node,
+                server_url=server_url,
+                # The binary classifier has already converted the selected lung
+                # mask to a padded bounding box. Reuse exactly that ROI so both
+                # classifiers inherit the same human-editable lung localization.
+                bbox=anatomy_bbox if mask_node is not None else None,
+            )
+            scope = cxformer_result.get("analysis_scope", "full_image")
+            scope_label = (
+                "lung-mask ROI (experimental)"
+                if scope == "lung_mask_roi"
+                else "full image"
+            )
+            self.cxformerStatusLabel.setText(f"Status: Done — {scope_label}")
+            self.cxformerTimingLabel.setText(
+                f"  Runtime:     {cxformer_result.get('elapsed_s', 0):.2f}s"
+            )
+            self.cxformerProbabilityTable.setHtml(
+                self.cxformer_probability_html(cxformer_result)
+            )
+
+        except Exception as error:
+            errors.append(f"CXFormer 14-label inference failed: {error}")
+            self.cxformerStatusLabel.setText("Status: ERROR")
+            self.cxformerProbabilityTable.setHtml(
+                "<p style='color:orange'>CXFormer 14-label inference failed.</p>"
+            )
+            self.logic.debug_log(
+                "cxformer multilabel failed",
                 error=repr(error),
                 traceback=traceback.format_exc(),
             )
@@ -430,6 +554,7 @@ class ChestAnalyzerWidget(ScriptedLoadableModuleWidget):
                 classify_result=classify_result,
                 anatomy_result=anatomy_result,
                 lesion_result=lesion_result,
+                cxformer_result=cxformer_result,
             )
             self.reportPathLabel.setText("Report JSON: " + report_path)
         except Exception as error:
@@ -437,7 +562,12 @@ class ChestAnalyzerWidget(ScriptedLoadableModuleWidget):
             self.reportPathLabel.setText("Report JSON: ERROR")
 
         # ── Switch to 3-panel layout and assign views ─────────────────
+        # Segmentations are separate MRML display objects, not slice label
+        # layers. Hide them before showing results so an old lung mask cannot
+        # remain painted over the Grad-CAM view when the selector is None.
+        self.logic.hide_all_segmentation_displays()
         self.logic.set_three_panel_layout(_CHEST_ANALYZER_LAYOUT_ID)
+        slicer.app.processEvents()
         self.logic.assign_panels(
             source_node=volume_node,
             gradcam_node=gradcam_node,
@@ -450,8 +580,58 @@ class ChestAnalyzerWidget(ScriptedLoadableModuleWidget):
         else:
             slicer.util.infoDisplay(
                 "ChestAnalyze complete.\n"
-                "Red: GradCAM  |  Green: Anatomy  |  Yellow: Lesion"
+                "Red: GradCAM  |  Green: Anatomy  |  Yellow: MedicalPatchNet Lesion"
             )
+
+    @staticmethod
+    def cxformer_probability_html(cxformer_result):
+        probabilities = cxformer_result.get("probabilities", {})
+        thresholds = cxformer_result.get("thresholds", {})
+        if not probabilities:
+            return "<p>No CXFormer probabilities returned.</p>"
+
+        rows = []
+        ranked = sorted(
+            probabilities.items(),
+            key=lambda item: float(item[1]),
+            reverse=True,
+        )
+        for finding, value in ranked:
+            probability = float(value)
+            threshold = float(thresholds.get(finding, 0.5))
+            present = probability >= threshold
+            status = "PRESENT" if present else "ABSENT"
+            background = "#ffe2e2" if present else "#ffffff"
+            weight = "bold" if present else "normal"
+            rows.append(
+                f"<tr style='background:{background};font-weight:{weight}'>"
+                f"<td>{html.escape(str(finding))}</td>"
+                f"<td>{probability:.1%}</td>"
+                f"<td>{threshold:.1%}</td>"
+                f"<td>{status}</td></tr>"
+            )
+
+        scope = cxformer_result.get("analysis_scope", "full_image")
+        if scope == "lung_mask_roi":
+            scope_note = (
+                "<p style='color:#9a6700'><b>Input: padded lung-mask ROI "
+                "(experimental).</b><br>Thresholds were calibrated on full "
+                "VinBigData images; validate this ROI mode before clinical use.</p>"
+            )
+        else:
+            scope_note = "<p><b>Input: full image.</b></p>"
+
+        return (
+            "<p><b>CXFormer 14-label classification</b><br>"
+            "Result only: CXFormer does not control any image panel in this mode.</p>"
+            + scope_note
+            + "<table cellspacing='0' cellpadding='4' border='1' "
+            "style='border-collapse:collapse;width:100%'>"
+            "<tr style='background:#dddddd;font-weight:bold'>"
+            "<td>Finding</td><td>Probability</td><td>Threshold</td><td>Status</td></tr>"
+            + "".join(rows)
+            + "</table>"
+        )
 
 
 # ---------------------------------------------------------------------------
@@ -648,35 +828,72 @@ class ChestAnalyzerLogic(ScriptedLoadableModuleLogic):
             "bbox_in_source_image": bbox_in_source_image,
         }
 
-    # -- Lesion localization ---------------------------------------------
+    # -- MedicalPatchNet lesion + CXFormer result-only classification -------
 
-    def run_lesion(self, volume_node, server_url, bbox=None):
-        """
-        POST the cropped X-ray ROI to /infer/lesion_localization and return MedicalPatchNet
-        probabilities, ranked findings, runtime, and optional overlay_base64.
-        """
+    def run_medicalpatchnet_lesion(self, volume_node, server_url):
+        """Run the original MedicalPatchNet lesion-localization endpoint."""
         temp_dir = tempfile.gettempdir()
         image_path = os.path.join(temp_dir, "slicer_xray_lesion_input.png")
+        self.save_volume_as_png(volume_node, image_path)
+
+        url = server_url.rstrip("/") + "/infer/lesion_localization"
+        params = {"output": "json"}
+        form = {"params": json.dumps({"analysis_scope": "full_image"})}
+        self.debug_log(
+            "medicalpatchnet lesion request",
+            url=url,
+            image_path=image_path,
+        )
+
+        with open(image_path, "rb") as image_file:
+            response = requests.post(
+                url,
+                params=params,
+                data=form,
+                files={"file": ("xray.png", image_file, "image/png")},
+                timeout=900,
+            )
+
+        self.debug_log(
+            "medicalpatchnet lesion response",
+            status_code=response.status_code,
+            content_type=response.headers.get("content-type", ""),
+            content_length=len(response.content),
+        )
+        if response.status_code != 200:
+            raise RuntimeError(
+                f"MedicalPatchNet lesion inference failed [{response.status_code}]: "
+                f"{response.text}"
+            )
+
+        result = response.json()
+        return result.get("params", result)
+
+    def run_cxformer_multilabel(self, volume_node, server_url, bbox=None):
+        """Run CXFormer as 14-label classification only; no heatmap or image output."""
+        temp_dir = tempfile.gettempdir()
+        image_path = os.path.join(temp_dir, "slicer_xray_cxformer_input.png")
         self.save_volume_as_png(volume_node, image_path)
         crop_info = None
         if bbox:
             crop_info = self.crop_png_to_bbox(image_path, bbox)
 
-        url = server_url.rstrip("/") + "/infer/lesion_localization"
+        url = server_url.rstrip("/") + "/infer/cxformer_pathology"
         params = {"output": "json"}
         request_params = {
-            "include_overlay": True,
-            "analysis_scope": "roi_crop" if crop_info else "full_image",
+            "include_localization": False,
+            "analysis_scope": "lung_mask_roi" if crop_info else "full_image",
+            "roi_source": "edited_lung_mask" if crop_info else "input_image",
             "bbox_in_source_image": crop_info["bbox"] if crop_info else None,
             "source_image_shape": crop_info["source_image_shape"] if crop_info else None,
-            "lesion_input_shape": crop_info["crop_shape"] if crop_info else None,
+            "cxformer_input_shape": crop_info["crop_shape"] if crop_info else None,
+            "experimental_roi_mode": bool(crop_info),
         }
         form = {"params": json.dumps(request_params)}
         self.debug_log(
-            "lesion request",
+            "cxformer multilabel request",
             url=url,
             image_path=image_path,
-            bbox=bbox,
             request_params=request_params,
         )
 
@@ -688,24 +905,27 @@ class ChestAnalyzerLogic(ScriptedLoadableModuleLogic):
                 files={"file": ("xray.png", image_file, "image/png")},
                 timeout=900,
             )
+
         self.debug_log(
-            "lesion response",
+            "cxformer multilabel response",
             status_code=response.status_code,
             content_type=response.headers.get("content-type", ""),
             content_length=len(response.content),
         )
-
         if response.status_code != 200:
             raise RuntimeError(
-                f"Lesion inference failed [{response.status_code}]: {response.text}"
+                f"CXFormer 14-label inference failed [{response.status_code}]: "
+                f"{response.text}"
             )
+
         result = response.json()
-        lesion_result = result.get("params", result)
-        lesion_result["analysis_scope"] = request_params["analysis_scope"]
-        lesion_result["bbox_in_source_image"] = request_params["bbox_in_source_image"]
-        lesion_result["source_image_shape"] = request_params["source_image_shape"]
-        lesion_result["lesion_input_shape"] = request_params["lesion_input_shape"]
-        return lesion_result
+        cxformer_result = result.get("params", result)
+        # MONAI Label ignores client metadata that is not needed by the model;
+        # preserve it in the Slicer result/report for traceability.
+        cxformer_result.update(request_params)
+        # Classification-only mode must not feed any overlay into Slicer.
+        cxformer_result["overlay_base64"] = None
+        return cxformer_result
 
     @staticmethod
     def load_lesion_overlay(lesion_result, reference_volume):
@@ -736,6 +956,7 @@ class ChestAnalyzerLogic(ScriptedLoadableModuleLogic):
         classify_result=None,
         anatomy_result=None,
         lesion_result=None,
+        cxformer_result=None,
     ):
         temp_dir = tempfile.gettempdir()
         source_name = volume_node.GetName() if volume_node else "unknown"
@@ -748,6 +969,30 @@ class ChestAnalyzerLogic(ScriptedLoadableModuleLogic):
                 "image_quality": "not_evaluated",
             },
             "classification": classify_result or {},
+            "cxformer_multilabel": {
+                "model": (cxformer_result or {}).get("model"),
+                "probabilities": (cxformer_result or {}).get("probabilities", {}),
+                "thresholds": (cxformer_result or {}).get("thresholds", {}),
+                "findings": (cxformer_result or {}).get("findings", []),
+                "analysis_scope": (cxformer_result or {}).get(
+                    "analysis_scope", "full_image"
+                ),
+                "roi_source": (cxformer_result or {}).get(
+                    "roi_source", "input_image"
+                ),
+                "bbox_in_source_image": (cxformer_result or {}).get(
+                    "bbox_in_source_image"
+                ),
+                "source_image_shape": (cxformer_result or {}).get(
+                    "source_image_shape"
+                ),
+                "cxformer_input_shape": (cxformer_result or {}).get(
+                    "cxformer_input_shape"
+                ),
+                "experimental_roi_mode": bool(
+                    (cxformer_result or {}).get("experimental_roi_mode", False)
+                ),
+            },
             "anatomy": self._report_anatomy(anatomy_result),
             "findings": (lesion_result or {}).get("findings", []),
             "measurements": {
@@ -760,14 +1005,21 @@ class ChestAnalyzerLogic(ScriptedLoadableModuleLogic):
             },
             "provenance": {
                 "anatomy_model": "ianpan/chest-x-ray-basic",
-                "finding_localization_model": "patrick-w/MedicalPatchNet",
+                "finding_localization_model": (lesion_result or {}).get(
+                    "model", "patrick-w/MedicalPatchNet"
+                ),
+                "multilabel_classification_model": (cxformer_result or {}).get(
+                    "model", "cxformer_final_all15000"
+                ),
                 "classification_model": "mobilenet_2025_lung_crop_corrected",
-                "localization_method": "patch_based_self_explainable_map",
+                "localization_method": (lesion_result or {}).get(
+                    "localization_method", "patch_based_self_explainable_map"
+                ),
                 "human_reviewed": False,
             },
             "runtime": {
-                "lesion_elapsed_s": (lesion_result or {}).get("elapsed_s"),
-                "lesion_shift_pixels": (lesion_result or {}).get("shift_pixels"),
+                "medicalpatchnet_elapsed_s": (lesion_result or {}).get("elapsed_s"),
+                "cxformer_elapsed_s": (cxformer_result or {}).get("elapsed_s"),
             },
         }
         with open(report_path, "w", encoding="utf-8") as report_file:
@@ -807,7 +1059,7 @@ class ChestAnalyzerLogic(ScriptedLoadableModuleLogic):
             "bbox": {"x1": x1, "y1": y1, "x2": x2, "y2": y2},
         }
         ChestAnalyzerLogic.debug_log(
-            "cropped anatomy input",
+            "cropped ROI input",
             image_path=image_path,
             original_size=(width, height),
             crop_size=(x2 - x1, y2 - y1),
@@ -995,25 +1247,30 @@ class ChestAnalyzerLogic(ScriptedLoadableModuleLogic):
 
     @staticmethod
     def create_overlay_volume(overlay, reference_volume, name, attribute_name):
-        volumes_logic = slicer.modules.volumes.logic()
-        overlay_node = volumes_logic.CloneVolumeGeneric(
-            slicer.mrmlScene,
-            reference_volume,
-            name,
-            False,
-        )
+        """Create RGB overlay safely for scalar DICOM and vector image sources."""
+        import numpy as np
+        import vtk
+
+        overlay = np.asarray(overlay)
+        if overlay.ndim != 3 or overlay.shape[-1] not in (3, 4):
+            raise RuntimeError(f"Expected RGB/RGBA overlay for {name}, got {overlay.shape}")
+        if overlay.shape[-1] == 4:
+            overlay = overlay[:, :, :3]
+
+        overlay_node = slicer.mrmlScene.AddNewNodeByClass("vtkMRMLVectorVolumeNode", name)
         if overlay_node is None:
-            raise RuntimeError(f"Could not clone the source volume for {name}.")
+            raise RuntimeError(f"Could not create vector overlay volume for {name}.")
+
+        slicer.util.updateVolumeFromArray(overlay_node, overlay[np.newaxis, ...])
+        if reference_volume is not None:
+            matrix = vtk.vtkMatrix4x4()
+            reference_volume.GetIJKToRASMatrix(matrix)
+            overlay_node.SetIJKToRASMatrix(matrix)
+
         overlay_node.SetHideFromEditors(True)
         overlay_node.SetAttribute(attribute_name, "1")
-        overlay_node.SetAttribute(
-            "ChestAnalyzer.SourceVolumeID",
-            reference_volume.GetID(),
-        )
-        slicer.util.updateVolumeFromArray(
-            overlay_node,
-            overlay[None, ...],
-        )
+        if reference_volume is not None:
+            overlay_node.SetAttribute("ChestAnalyzer.SourceVolumeID", reference_volume.GetID())
         overlay_node.CreateDefaultDisplayNodes()
         return overlay_node
 
@@ -1144,7 +1401,7 @@ class ChestAnalyzerLogic(ScriptedLoadableModuleLogic):
         """
         Red   -> GradCAM overlay, or source fallback
         Green → original X-ray background + anatomy segmentation overlay
-        Yellow -> MedicalPatchNet paper-style lesion display, or source fallback
+        Yellow -> MedicalPatchNet lesion-localization overlay, or source fallback
         """
         layout_manager = slicer.app.layoutManager()
         ChestAnalyzerLogic.debug_log(
@@ -1176,7 +1433,7 @@ class ChestAnalyzerLogic(ScriptedLoadableModuleLogic):
             )
             ChestAnalyzerLogic.assign_background_to_slice(green_widget, green_bg)
 
-        # Yellow: paper-style MedicalPatchNet lesion display
+        # Yellow: original MedicalPatchNet lesion-localization display
         yellow_widget = layout_manager.sliceWidget("Yellow")
         if yellow_widget:
             yellow_bg = lesion_node if lesion_node is not None else source_node
@@ -1194,7 +1451,12 @@ class ChestAnalyzerLogic(ScriptedLoadableModuleLogic):
 
     @staticmethod
     def assign_background_to_slice(slice_widget, background_node):
-        slice_widget.mrmlSliceNode().SetOrientationToAxial()
+        # Green and Yellow persist Slicer's Coronal/Sagittal defaults. Since
+        # every result is a one-slice 2-D volume, those orientations show the
+        # image edge-on as a black panel with one thin line.
+        slice_node = slice_widget.mrmlSliceNode()
+        slice_node.SetOrientation("Axial")
+        slice_node.UpdateMatrices()
         composite = slice_widget.mrmlSliceCompositeNode()
         composite.SetBackgroundVolumeID(background_node.GetID() if background_node else "")
         composite.SetForegroundVolumeID("")
@@ -1208,12 +1470,31 @@ class ChestAnalyzerLogic(ScriptedLoadableModuleLogic):
                 0.5 * (bounds[2] + bounds[3]),
                 0.5 * (bounds[4] + bounds[5]),
             ]
-            slice_widget.mrmlSliceNode().JumpSliceByCentering(
+            slice_node.JumpSliceByCentering(
                 center[0],
                 center[1],
                 center[2],
             )
-        slice_widget.sliceLogic().FitSliceToAll()
+        slice_logic = slice_widget.sliceLogic()
+        slice_logic.SnapSliceOffsetToIJK()
+        slice_logic.FitSliceToAll()
+        slice_node.Modified()
+
+    @staticmethod
+    def hide_all_segmentation_displays():
+        """Hide stale editable masks before rendering analysis panels."""
+        for node_class in (
+            "vtkMRMLSegmentationNode",
+            "vtkMRMLLabelMapVolumeNode",
+        ):
+            for node in slicer.util.getNodesByClass(node_class):
+                display_node = node.GetDisplayNode()
+                if display_node is None:
+                    continue
+                display_node.SetVisibility(False)
+                if node.IsA("vtkMRMLSegmentationNode"):
+                    display_node.SetVisibility2D(False)
+                    display_node.SetVisibility3D(False)
 
     @classmethod
     def debug_slice_widget_state(cls, slice_widget, stage):
@@ -1474,27 +1755,12 @@ class ChestAnalyzerLogic(ScriptedLoadableModuleLogic):
         if attribute_name == "ChestAnalyzer.IsGradCAM":
             ChestAnalyzerLogic.remove_gradcam_overlay()
 
-        volumes_logic = slicer.modules.volumes.logic()
-        overlay_node = volumes_logic.CloneVolumeGeneric(
-            slicer.mrmlScene,
-            reference_volume,
-            name,
-            False,
+        return ChestAnalyzerLogic.create_overlay_volume(
+            overlay=overlay,
+            reference_volume=reference_volume,
+            name=name,
+            attribute_name=attribute_name,
         )
-        if overlay_node is None:
-            raise RuntimeError("Could not clone the source X-ray volume.")
-        overlay_node.SetHideFromEditors(True)
-        overlay_node.SetAttribute(attribute_name, "1")
-        overlay_node.SetAttribute(
-            "ChestAnalyzer.SourceVolumeID",
-            reference_volume.GetID(),
-        )
-        slicer.util.updateVolumeFromArray(
-            overlay_node,
-            overlay[np.newaxis, ...],
-        )
-        overlay_node.CreateDefaultDisplayNodes()
-        return overlay_node
 
     @staticmethod
     def create_standalone_overlay_volume(
@@ -1568,33 +1834,84 @@ class ChestAnalyzerLogic(ScriptedLoadableModuleLogic):
             or volume_node.GetImageData() is None
         ):
             return False
+
+        # Never treat generated analysis volumes / label maps as new studies.
+        if volume_node.IsA("vtkMRMLLabelMapVolumeNode"):
+            return False
         if (
-            volume_node.GetName() in ("GradCAM_Overlay", "AnatomyOverlay", "LesionOverlay")
+            volume_node.GetName() in (
+                "GradCAM_Overlay",
+                "AnatomyOverlay",
+                "LesionOverlay",
+                "AnatomyLabelMap",
+                "TemporaryLungMask",
+            )
             or volume_node.GetAttribute("ChestAnalyzer.IsGradCAM") == "1"
+            or volume_node.GetAttribute("ChestAnalyzer.IsAnatomy") == "1"
             or volume_node.GetAttribute("ChestAnalyzer.IsLesion") == "1"
             or volume_node.GetAttribute("PneumoniaPredictor.IsGradCAM") == "1"
             or volume_node.GetHideFromEditors()
         ):
             return False
 
+        if volume_node.GetAttribute("ChestAnalyzer.IsXraySource") == "1":
+            return True
+
+        # DICOM imports often point at a cached file whose extension is not
+        # .dcm/.dicom, so use DICOM metadata as the primary signal.
+        for attribute_name in (
+            "DICOM.instanceUIDs",
+            "DICOM.SeriesInstanceUID",
+            "DICOM.StudyInstanceUID",
+        ):
+            if volume_node.GetAttribute(attribute_name):
+                return True
+
+        modality = (volume_node.GetAttribute("DICOM.Modality") or "").upper()
+        if modality in ("DX", "CR", "RG"):
+            return True
+
         storage_node = volume_node.GetStorageNode()
         file_name = storage_node.GetFileName() if storage_node else ""
         candidate_name = (file_name or volume_node.GetName() or "").lower()
-        return candidate_name.endswith((".jpg", ".jpeg", ".png"))
+        if candidate_name.endswith((".jpg", ".jpeg", ".png", ".dcm", ".dicom")):
+            return True
+
+        # Final fallback for this 2-D chest-X-ray app.
+        dimensions = volume_node.GetImageData().GetDimensions()
+        if dimensions and len(dimensions) >= 3 and dimensions[2] == 1:
+            return True
+
+        return False
 
     @staticmethod
     def resolve_source_volume(selected_volume):
+        # An explicit combo-box selection is authoritative. Falling through to
+        # the newest MRML node can silently analyze another study when several
+        # JPG and DICOM volumes are open in the same Slicer scene.
         if ChestAnalyzerLogic.is_xray_source(selected_volume):
             return selected_volume
 
+        # Only use the newest valid source as a fallback when the selector is
+        # empty or points at a generated/non-X-ray node.
         candidates = []
+        seen_ids = set()
+
+        def add_candidate(volume_node):
+            if not ChestAnalyzerLogic.is_xray_source(volume_node):
+                return
+            node_id = volume_node.GetID()
+            if node_id in seen_ids:
+                return
+            seen_ids.add(node_id)
+            candidates.append(volume_node)
+
         for node_class in (
             "vtkMRMLScalarVolumeNode",
             "vtkMRMLVectorVolumeNode",
         ):
             for volume_node in slicer.util.getNodesByClass(node_class):
-                if ChestAnalyzerLogic.is_xray_source(volume_node):
-                    candidates.append(volume_node)
+                add_candidate(volume_node)
 
         if not candidates:
             return None
