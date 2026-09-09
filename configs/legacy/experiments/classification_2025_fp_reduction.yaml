@@ -1,0 +1,6 @@
+defaults:
+  - classification_2025_core.yaml
+  - ../augmentations/fp_reduction.yaml
+
+experiment:
+  name: classification_2025_fp_reduction

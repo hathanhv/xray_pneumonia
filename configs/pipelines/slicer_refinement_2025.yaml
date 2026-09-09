@@ -1,0 +1,54 @@
+defaults:
+  - base/default
+  - models/lung_segmentation
+  - preprocessing/lung_roi_legacy
+
+experiment:
+  name: slicer_refinement_2025
+
+input:
+  images_dir: data/lung_seg_input/2025_all/images
+  manifest_path: data/lung_seg_input/2025_all/metadata.csv
+  filename_column: new_filename
+  original_path_column: original_path
+  split_column: split
+  class_column: class
+
+lung_segmentation:
+  output:
+    output_dir: data/lung_seg_outputs/2025_all
+    save_mask: true
+    save_crop: true
+    save_overlay: true
+    overlay_alpha: 0.35
+
+report:
+  qc_report_path: data/lung_seg_outputs/2025_all/qc_report_2025.csv
+
+slicer_refinement:
+  predicted_masks_dir: data/lung_seg_outputs/2025_all/masks
+  predicted_crops_dir: data/lung_seg_outputs/2025_all/cropped
+  overlays_dir: data/lung_seg_outputs/2025_all/overlays
+  studies_dir: data/qc/fail_qc/images
+  study_predicted_masks_dir: data/qc/fail_qc/predicted_masks
+  study_crops_dir: data/qc/fail_qc/crop
+  study_overlays_dir: data/qc/fail_qc/overlays
+  studies_manifest_path: data/qc/fail_qc/slicer_studies_manifest.csv
+  labels_dir: data/qc/fail_qc/images/labels/final
+  corrected_images_dir: data/qc/corrected/images
+  corrected_masks_dir: data/qc/corrected/masks
+  pass_crops_dir: data/qc/corrected/crop
+  final_masks_dir: data/lung_seg_outputs/2025_all/final_masks
+  merge_report_path: data/lung_seg_outputs/2025_all/final_masks_merge_report.csv
+  final_dataset_dir: data/final/xray_2025_lung_crop_corrected
+  final_dataset_report_path: data/final/xray_2025_lung_crop_corrected/final_dataset_report.csv
+  failed_crops_dir: data/final/xray_2025_lung_crop_corrected/failed_crops
+  status_path: data/qc/stage9_status.json
+  pass_status: PASS
+  flip_vertical: true
+  crop:
+    pad_left: 90
+    pad_right: 90
+    pad_top: 60
+    pad_bottom: 8
+    max_bottom_ratio: 0.75

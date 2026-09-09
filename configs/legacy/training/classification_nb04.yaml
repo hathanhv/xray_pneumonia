@@ -1,0 +1,33 @@
+training:
+  epochs: 15
+  optimizer:
+    name: adam
+    learning_rate: 0.0001
+    weight_decay: 0.0
+  scheduler:
+    name: reduce_on_plateau
+    mode: min
+    factor: 0.1
+    patience: 3
+  loss:
+    name: cross_entropy
+    label_smoothing: 0.0
+  early_stopping:
+    monitor: val_loss
+    mode: min
+    patience: 0
+    min_delta: 0.0
+    constraints: []
+
+augmentation:
+  name: baseline
+  horizontal_flip: 0.5
+  rotation: 10
+
+sampler:
+  name: random
+
+dataloader:
+  batch_size: 32
+  num_workers: 2
+  pin_memory: true

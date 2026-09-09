@@ -1,0 +1,9 @@
+model:
+  name: mobilenet_v2
+  num_classes: 2
+  pretrained: true
+  init_checkpoint_path: checkpoints/pneumonia_classifier/pneumonia_classifier.pth
+  dropout: 0.2
+  finetune_mode: last_blocks
+  unfreeze_blocks: 3
+  freeze_batchnorm: false

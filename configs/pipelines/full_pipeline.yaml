@@ -1,0 +1,169 @@
+pipeline:
+  name: xray_pneumonia_full_pipeline
+  output_dir: outputs/full_pipeline
+  resume: true
+  fail_fast: true
+  report:
+    title: X-ray Pneumonia Project Final Pipeline Report
+    markdown_path: outputs/full_pipeline/final_report.md
+    html_path: outputs/full_pipeline/final_report.html
+    collect:
+      metrics:
+        - outputs/task10_classification_2025/*/metrics.json
+        - outputs/task11_evaluation/*/metrics.json
+        - outputs/task11_evaluation/experiment_summary.json
+      figures:
+        - outputs/task10_classification_2025/*.png
+        - outputs/task11_evaluation/**/*.png
+      manifests:
+        - data/manifests/classification_2025_task10.csv
+        - data/final/xray_2025_lung_crop_corrected/final_dataset_report.csv
+      artifacts:
+        - outputs/task11_evaluation/experiment_summary.csv
+
+stages:
+  - id: hard_negative_classification
+    enabled: true
+    description: Train the 2018 hard-negative classification checkpoint.
+    command:
+      - ${PYTHON}
+      - scripts/run_advanced_classification.py
+      - --config
+      - configs/experiments/cls_2018_hard_negative_mining.yaml
+    outputs:
+      - glob: outputs/experiments/cls_2018_hard_negative_mining/*/stages/hard_negative_finetuning/best_model.pth
+        kind: file
+        min_size_bytes: 1024
+        min_matches: 1
+
+  - id: ambigan_boundary_generation
+    enabled: true
+    depends_on:
+      - hard_negative_classification
+    description: Generate boundary-normal samples for hubris-aware training.
+    command:
+      - ${PYTHON}
+      - scripts/run_ambigan_boundary_generation.py
+      - --config
+      - configs/experiments/ambigan_boundary_generation.yaml
+    outputs:
+      - glob: outputs/experiments/ambigan_boundary_generation/*/boundary_images/metadata.csv
+        kind: file
+        validator: csv
+        min_rows: 1
+        min_matches: 1
+
+  - id: hubris_aware_training
+    enabled: true
+    depends_on:
+      - hard_negative_classification
+      - ambigan_boundary_generation
+    description: Fine-tune the classifier with boundary samples.
+    command:
+      - ${PYTHON}
+      - scripts/train_hubris_aware_classifier.py
+      - --config
+      - configs/experiments/hubris_aware_boundary_training.yaml
+    outputs:
+      - glob: outputs/experiments/hubris_aware_boundary_training/*/checkpoints/best_model.pth
+        kind: file
+        min_size_bytes: 1024
+        min_matches: 1
+
+  - id: slicer_preparation
+    enabled: true
+    description: Extract lung ROIs and prepare failed-QC studies for Slicer.
+    command:
+      - ${PYTHON}
+      - scripts/run_slicer_refinement.py
+      - pre-slicer
+      - --config
+      - configs/pipelines/slicer_refinement_2025.yaml
+    outputs:
+      - path: data/lung_seg_outputs/2025_all/qc_report_2025.csv
+        kind: file
+        validator: csv
+        min_rows: 1
+      - path: data/qc/fail_qc/slicer_studies_manifest.csv
+        kind: file
+        validator: csv
+        min_rows: 0
+    artifacts:
+      manifests:
+        - data/qc/fail_qc/slicer_studies_manifest.csv
+
+  - id: slicer_label_review
+    enabled: false
+    description: Manual 3D Slicer review; enable downstream stage after labels exist.
+
+  - id: slicer_merge_and_crop
+    enabled: false
+    description: Import reviewed labels, merge masks, and create final crops.
+    command:
+      - ${PYTHON}
+      - scripts/run_slicer_refinement.py
+      - post-slicer
+      - --config
+      - configs/pipelines/slicer_refinement_2025.yaml
+    outputs:
+      - path: data/lung_seg_outputs/2025_all/final_masks_merge_report.csv
+        kind: file
+        validator: csv
+        min_rows: 1
+      - path: data/final/xray_2025_lung_crop_corrected/final_dataset_report.csv
+        kind: file
+        validator: csv
+        min_rows: 1
+
+  - id: classification_2025
+    enabled: true
+    description: Run Task 10 preprocessing, training, and comparison.
+    command:
+      - ${PYTHON}
+      - scripts/run_classification_2025_task10.py
+      - all
+    outputs:
+      - path: outputs/task10_classification_2025/domain_shift_comparison.json
+        kind: file
+        validator: json
+      - path: outputs/task10_classification_2025/domain_shift_comparison.csv
+        kind: file
+        validator: csv
+        min_rows: 1
+    artifacts:
+      metrics:
+        - outputs/task10_classification_2025/*/metrics.json
+      figures:
+        - outputs/task10_classification_2025/domain_shift_comparison.png
+
+  - id: evaluation_and_ablation
+    enabled: true
+    depends_on:
+      - classification_2025
+    description: Run Task 11 evaluation and aggregate experiment results.
+    commands:
+      - - ${PYTHON}
+        - scripts/run_task11_evaluation.py
+        - evaluate
+      - - ${PYTHON}
+        - scripts/run_task11_evaluation.py
+        - summary
+    outputs:
+      - path: outputs/task11_evaluation/experiment_summary.json
+        kind: file
+        validator: json
+      - path: outputs/task11_evaluation/experiment_summary.csv
+        kind: file
+        validator: csv
+        min_rows: 1
+      - path: outputs/task11_evaluation/experiment_summary.png
+        kind: file
+        min_size_bytes: 1024
+    artifacts:
+      metrics:
+        - outputs/task11_evaluation/*/metrics.json
+        - outputs/task11_evaluation/experiment_summary.json
+      figures:
+        - outputs/task11_evaluation/**/*.png
+      artifacts:
+        - outputs/task11_evaluation/experiment_summary.csv

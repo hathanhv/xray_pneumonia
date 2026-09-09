@@ -1,0 +1,4 @@
+augmentation:
+  name: baseline
+  horizontal_flip: 0.5
+  rotation: 7

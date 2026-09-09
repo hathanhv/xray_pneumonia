@@ -1,0 +1,10 @@
+preprocessing:
+  name: composite
+  strategies:
+    - name: lung_roi
+      mask_key: mask_path
+      padding: 0
+      fallback:
+        name: raw
+    - name: resize
+      size: 224

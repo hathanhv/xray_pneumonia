@@ -1,0 +1,18 @@
+# Runtime restored during Task 0 on 2026-06-12.
+python==3.10.20
+torch==2.12.0
+torchvision==0.27.0
+numpy==1.26.4
+opencv-python==4.11.0.86
+monai==1.5.2
+monailabel==0.8.5
+segmentation-models-pytorch==0.5.0
+SimpleITK==2.5.5
+itk==5.4.6
+pydicom==2.4.4
+pydicom-seg==0.4.1
+dicomweb-client==0.59.3
+pynetdicom==2.0.2
+
+# MONAI Label 0.8.5 declares SAM2 as a dependency, but this custom app does
+# not import or use SAM2. It was intentionally not installed for Task 0.

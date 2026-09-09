@@ -1,0 +1,75 @@
+defaults:
+  - ../base/default.yaml
+  - ../datasets/xray_2018.yaml
+  - ../models/mobilenet_v2.yaml
+  - ../preprocessing/resize.yaml
+
+experiment:
+  name: hubris_aware_boundary_training
+
+seed: 42
+return_metadata: true
+
+input:
+  grayscale: false
+  normalize: true
+
+model:
+  pretrained: false
+  init_checkpoint_path: null
+  dropout: 0.3
+  finetune_mode: full
+  freeze_batchnorm: false
+
+augmentation:
+  name: baseline
+  horizontal_flip: 0.5
+  rotation: 10
+
+sampler:
+  name: random
+
+dataloader:
+  batch_size: 32
+  num_workers: 2
+  pin_memory: true
+
+hubris_training:
+  base_checkpoint_path: checkpoints/advanced_classification/stage2_hard_negative.pth
+  strategies:
+    - hard_normal
+    - soft
+  boundary:
+    image_dir: outputs/boundary_images/NORMAL
+    metadata_path: outputs/boundary_images/metadata.csv
+    max_confusion_distance: 0.08
+    max_images: 100
+    oversample: 1
+  training:
+    epochs: 10
+    class_weighting:
+      strategy: manual
+      values: [2.0, 0.5]
+    loss:
+      name: soft_focal
+      gamma: 2.0
+    optimizer:
+      name: adam
+      learning_rate: 0.00001
+      weight_decay: 0.00001
+    scheduler:
+      name: cosine
+      t_max: 10
+    early_stopping:
+      selection: recall_constrained
+      monitor: val_f1
+      mode: max
+      fallback_monitor: val_specificity
+      fallback_mode: max
+      patience: 0
+      constraints:
+        - metric: val_recall
+          operator: ">="
+          value: 0.95
+  selection:
+    min_recall: 0.95

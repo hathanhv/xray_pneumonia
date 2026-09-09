@@ -1,0 +1,16 @@
+defaults:
+  - ../base/default.yaml
+  - ../models/mobilenet_v2.yaml
+  - ../legacy/preprocessing/legacy_classifier_224.yaml
+
+experiment:
+  name: classification_legacy_parity
+
+model:
+  pretrained: false
+  finetune_mode: full
+  checkpoint_path: checkpoints/pneumonia_classifier/mobilenet_2025_lung_crop_corrected.pth
+
+dataset:
+  manifest_path: tests/fixtures/manifests/classification_2025.csv
+  root_dir: .

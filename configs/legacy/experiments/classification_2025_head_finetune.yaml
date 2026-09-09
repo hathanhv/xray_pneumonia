@@ -1,0 +1,10 @@
+defaults:
+  - classification_2025_core.yaml
+  - ../../augmentations/light_head_finetuning.yaml
+
+experiment:
+  name: classification_2025_head_finetune
+
+model:
+  finetune_mode: head
+  freeze_batchnorm: true

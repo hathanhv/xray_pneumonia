@@ -1,0 +1,12 @@
+dataset:
+  name: chest_xray_2018
+  data_dir: data/raw/chest_xray_2018
+  class_names:
+    - NORMAL
+    - PNEUMONIA
+  split:
+    method: sklearn_stratified
+    val_fraction: 0.2
+    seed: 42
+    preserve_existing_test: true
+    manifest_output: outputs/manifests/classification_2018_split.csv

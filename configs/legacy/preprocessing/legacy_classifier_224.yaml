@@ -1,0 +1,7 @@
+preprocessing:
+  name: legacy_classifier
+  size: 224
+
+input:
+  grayscale: true
+  normalize: true

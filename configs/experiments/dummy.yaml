@@ -1,0 +1,9 @@
+defaults:
+  - base/default
+  - datasets/xray_2025
+  - models/dummy
+  - preprocessing/raw
+  - training/dummy
+
+experiment:
+  name: task1_dummy

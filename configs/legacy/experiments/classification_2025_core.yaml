@@ -1,0 +1,25 @@
+defaults:
+  - ../../base/default.yaml
+  - ../datasets/xray_2025.yaml
+  - ../../models/mobilenet_v2.yaml
+  - ../preprocessing/legacy_classifier_224.yaml
+  - ../../training/classification_core.yaml
+
+experiment:
+  name: classification_2025_core
+
+seed: 42
+return_metadata: true
+
+evaluation:
+  # Keep script 07 backward-compatible with the historical notebook command.
+  protocol: legacy_test_as_validation
+
+dataset:
+  split:
+    val_fraction: 0.15
+    test_fraction: 0.0
+    seed: 42
+    patient_level: true
+    preserve_existing_test: true
+    manifest_output: outputs/manifests/classification_2025_split.csv

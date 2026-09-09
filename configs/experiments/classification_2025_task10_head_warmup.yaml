@@ -1,0 +1,19 @@
+defaults:
+  - classification_2025_task10_refined_roi.yaml
+  - ../augmentations/light_head_finetuning.yaml
+
+experiment:
+  name: classification_2025_task10_head_warmup
+
+model:
+  finetune_mode: head
+  freeze_batchnorm: true
+  dropout: 0.3
+
+training:
+  epochs: 10
+  monitor: val_f1
+  early_stopping_patience: 4
+  optimizer:
+    learning_rate: 0.001
+    weight_decay: 0.0001

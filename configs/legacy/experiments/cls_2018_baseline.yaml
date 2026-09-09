@@ -1,0 +1,22 @@
+defaults:
+  - ../../base/default.yaml
+  - ../../datasets/xray_2018.yaml
+  - ../../models/mobilenet_v2.yaml
+  - ../../preprocessing/resize.yaml
+  - ../training/classification_nb04.yaml
+
+experiment:
+  name: cls_2018_baseline
+
+seed: 42
+return_metadata: true
+
+input:
+  grayscale: false
+  normalize: true
+
+model:
+  pretrained: true
+  init_checkpoint_path: null
+  finetune_mode: full
+  freeze_batchnorm: false

@@ -1,0 +1,6 @@
+defaults:
+  - classification_2025_core.yaml
+  - ../../augmentations/strong.yaml
+
+experiment:
+  name: classification_2025_strong_aug

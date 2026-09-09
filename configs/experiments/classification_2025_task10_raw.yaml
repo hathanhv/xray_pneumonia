@@ -1,0 +1,9 @@
+defaults:
+  - classification_2025_task10_base.yaml
+
+experiment:
+  name: classification_2025_task10_raw
+
+preprocessing:
+  name: resize
+  size: 224
