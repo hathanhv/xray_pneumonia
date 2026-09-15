@@ -385,6 +385,7 @@ class ChestAnalyzerWidget(ScriptedLoadableModuleWidget):
         anatomy_node = None
         lesion_node = None
         anatomy_bbox = None
+        analysis_bbox = None
         classify_result = None
         anatomy_result = None
         lesion_result = None
@@ -419,6 +420,7 @@ class ChestAnalyzerWidget(ScriptedLoadableModuleWidget):
             # GradCAM node was loaded by logic.classify()
             gradcam_node = self.logic.get_gradcam_node()
             anatomy_bbox = classify_result.get("bbox")
+            analysis_bbox = anatomy_bbox
 
         except Exception as error:
             errors.append(f"Classification failed: {error}")
@@ -438,11 +440,13 @@ class ChestAnalyzerWidget(ScriptedLoadableModuleWidget):
                 volume_node=volume_node,
                 server_url=server_url,
                 bbox=anatomy_bbox,
+                mask_node=mask_node,
             )
+            analysis_bbox = anatomy_result.get("bbox_in_source_image") or anatomy_bbox
             anatomy_node = self.logic.load_anatomy_overlay(
                 anatomy_result=anatomy_result,
                 reference_volume=volume_node,
-                bbox=anatomy_bbox,
+                bbox=analysis_bbox,
             )
 
             conf = anatomy_result.get("confidence", {})
@@ -521,7 +525,7 @@ class ChestAnalyzerWidget(ScriptedLoadableModuleWidget):
                 # The binary classifier has already converted the selected lung
                 # mask to a padded bounding box. Reuse exactly that ROI so both
                 # classifiers inherit the same human-editable lung localization.
-                bbox=anatomy_bbox if mask_node is not None else None,
+                bbox=analysis_bbox if mask_node is not None else None,
             )
             scope = cxformer_result.get("analysis_scope", "full_image")
             scope_label = (
@@ -714,25 +718,42 @@ class ChestAnalyzerLogic(ScriptedLoadableModuleLogic):
 
     # ── Anatomy segmentation ─────────────────────────────────────────────
 
-    def run_anatomy(self, volume_node, server_url, bbox=None):
+    def run_anatomy(self, volume_node, server_url, bbox=None, mask_node=None):
         """
         POST the X-ray to /infer/anatomy_segmentation and return the
         decoded result dict with keys: mask_nrrd_path, confidence, ctr, …
         """
         temp_dir = tempfile.gettempdir()
         image_path = os.path.join(temp_dir, "slicer_xray_anatomy_input.png")
+        mask_path = os.path.join(temp_dir, "slicer_xray_anatomy_lung_mask.png")
         self.save_volume_as_png(volume_node, image_path)
+        if mask_node is not None:
+            self.save_mask_as_png(mask_node, volume_node, mask_path)
+
         crop_info = None
-        if bbox:
+        if mask_node is not None:
+            crop_info = self.crop_png_to_lung_mask_roi(image_path, mask_path)
+        elif bbox:
             crop_info = self.crop_png_to_bbox(image_path, bbox)
 
         url = server_url.rstrip("/") + "/infer/anatomy_segmentation"
         params = {"output": "image"}
+        analysis_scope = (
+            "lung_mask_roi"
+            if mask_node is not None and crop_info
+            else ("roi_crop" if crop_info else "full_image")
+        )
         request_params = {
-            "analysis_scope": "roi_crop" if bbox else "full_image",
+            "analysis_scope": analysis_scope,
+            "roi_source": (
+                "edited_lung_mask"
+                if mask_node is not None
+                else ("classifier_bbox" if bbox else "input_image")
+            ),
             "bbox_in_source_image": crop_info["bbox"] if crop_info else None,
             "source_image_shape": crop_info["source_image_shape"] if crop_info else None,
             "anatomy_input_shape": crop_info["crop_shape"] if crop_info else None,
+            "lung_mask_source": mask_path if mask_node is not None else None,
         }
         form = {"params": json.dumps(request_params)}
         self.debug_log(
@@ -742,6 +763,7 @@ class ChestAnalyzerLogic(ScriptedLoadableModuleLogic):
             module_file=__file__,
             image_path=image_path,
             bbox=bbox,
+            mask_path=mask_path if mask_node is not None else None,
             request_params=request_params,
         )
 
@@ -767,7 +789,11 @@ class ChestAnalyzerLogic(ScriptedLoadableModuleLogic):
 
         content_type = response.headers.get("content-type", "")
         raw_mask_path = None
-        analysis_scope = "roi_crop" if bbox else "full_image"
+        analysis_scope = (
+            "lung_mask_roi"
+            if mask_node is not None and crop_info
+            else ("roi_crop" if crop_info else "full_image")
+        )
         anatomy_input_shape = None
         source_image_shape = None
         bbox_in_source_image = bbox
@@ -790,7 +816,10 @@ class ChestAnalyzerLogic(ScriptedLoadableModuleLogic):
             )
             ctr = self._parse_float_metadata(metadata.get("ChestAnalyzer.ctr"))
             raw_mask_path = metadata.get("ChestAnalyzer.raw_mask_png")
-            analysis_scope = metadata.get("ChestAnalyzer.analysis_scope")
+            analysis_scope = self._parse_json_metadata(
+                metadata.get("ChestAnalyzer.analysis_scope"),
+                default=metadata.get("ChestAnalyzer.analysis_scope"),
+            )
             anatomy_input_shape = self._parse_json_metadata(
                 metadata.get("ChestAnalyzer.input_shape"),
                 default=None,
@@ -1093,6 +1122,74 @@ class ChestAnalyzerLogic(ScriptedLoadableModuleLogic):
             original_size=(width, height),
             crop_size=(x2 - x1, y2 - y1),
             bbox=crop_info["bbox"],
+        )
+        return crop_info
+
+    @staticmethod
+    def crop_png_to_lung_mask_roi(
+        image_path,
+        mask_path,
+        pad_left=90,
+        pad_right=90,
+        pad_top=60,
+        pad_bottom=8,
+        max_bottom_ratio=0.75,
+    ):
+        import numpy as np
+        from PIL import Image
+
+        image = Image.open(image_path).convert("RGB")
+        mask = Image.open(mask_path).convert("L")
+        width, height = image.size
+        if mask.size != image.size:
+            mask = mask.resize(image.size, resample=Image.NEAREST)
+
+        mask_array = np.asarray(mask)
+        ys, xs = np.where(mask_array > 0)
+        if len(xs) == 0 or len(ys) == 0:
+            raise RuntimeError("Selected lung mask is empty; cannot crop anatomy ROI.")
+
+        max_bottom = int(height * max_bottom_ratio)
+        x1 = max(0, int(xs.min()) - int(pad_left))
+        y1 = max(0, int(ys.min()) - int(pad_top))
+        x2 = min(width, int(xs.max()) + int(pad_right) + 1)
+        y2 = min(height, int(ys.max()) + int(pad_bottom) + 1)
+        if y2 > max_bottom:
+            y2 = max_bottom
+        if x2 <= x1 or y2 <= y1:
+            raise RuntimeError(
+                "Invalid anatomy lung-mask ROI: "
+                f"x1={x1}, y1={y1}, x2={x2}, y2={y2}, image={(width, height)}"
+            )
+
+        image.crop((x1, y1, x2, y2)).save(image_path)
+        crop_info = {
+            "source_image_shape": [height, width],
+            "crop_shape": [y2 - y1, x2 - x1],
+            "bbox": {
+                "x1": int(x1),
+                "y1": int(y1),
+                "x2": int(x2),
+                "y2": int(y2),
+                "bbox_w": int(x2 - x1),
+                "bbox_h": int(y2 - y1),
+                "bottom_ratio": y2 / height if height > 0 else 0.0,
+            },
+            "mask_bounds": {
+                "x1": int(xs.min()),
+                "y1": int(ys.min()),
+                "x2": int(xs.max()) + 1,
+                "y2": int(ys.max()) + 1,
+            },
+        }
+        ChestAnalyzerLogic.debug_log(
+            "cropped anatomy input from lung mask",
+            image_path=image_path,
+            mask_path=mask_path,
+            original_size=(width, height),
+            crop_size=(x2 - x1, y2 - y1),
+            bbox=crop_info["bbox"],
+            mask_bounds=crop_info["mask_bounds"],
         )
         return crop_info
 

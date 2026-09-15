@@ -95,6 +95,8 @@ class AnatomySegmentationInfer:
     def infer(self, request):
         image_path = self._resolve_image_path(request)
         self._debug_log("image", path=image_path)
+        request_params = self._parse_request_params(request)
+        self._debug_log("request params", params=request_params)
 
         image_bgr = self._read_image_bgr(image_path)
         mask, softmax = self._predict(image_bgr)
@@ -107,9 +109,26 @@ class AnatomySegmentationInfer:
             "confidence": confidence,
             "ctr": ctr,
             "ctr_valid": ctr is not None,
+            "input_shape": list(image_bgr.shape[:2]),
         }
+        params.update(request_params)
         output_path = self._write_mask(mask, image_path, params)
         return str(output_path), params
+
+    @staticmethod
+    def _parse_request_params(request):
+        value = request.get("params")
+        if not value:
+            return {}
+        if isinstance(value, dict):
+            return dict(value)
+        if isinstance(value, str):
+            try:
+                parsed = json.loads(value)
+            except json.JSONDecodeError:
+                return {}
+            return parsed if isinstance(parsed, dict) else {}
+        return {}
 
     @staticmethod
     def _debug_log(message, **fields):
@@ -442,6 +461,17 @@ class AnatomySegmentationInfer:
             ctr = params.get("ctr")
             if ctr is not None:
                 itk_mask.SetMetaData("ChestAnalyzer.ctr", str(ctr))
+            for key in (
+                "analysis_scope",
+                "roi_source",
+                "input_shape",
+                "source_image_shape",
+                "bbox_in_source_image",
+                "lung_mask_source",
+            ):
+                value = params.get(key)
+                if value is not None:
+                    itk_mask.SetMetaData(f"ChestAnalyzer.{key}", json.dumps(value))
         itk_mask.SetMetaData("ChestAnalyzer.raw_mask_png", str(raw_mask_path))
         sitk.WriteImage(itk_mask, str(output_path))
 
