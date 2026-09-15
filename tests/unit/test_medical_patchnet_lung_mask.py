@@ -52,6 +52,35 @@ class MedicalPatchNetLungMaskTests(unittest.TestCase):
 
         np.testing.assert_array_equal(loaded, mask)
 
+    def test_preprocess_accepts_auto_lung_mask_array(self):
+        try:
+            import torchvision  # noqa: F401
+        except ModuleNotFoundError:
+            self.skipTest("preprocess tensor creation requires torchvision")
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            image_path = Path(tmpdir) / "xray.png"
+            image = np.full((8, 8), 120, dtype=np.uint8)
+            Image.fromarray(image, mode="L").save(image_path)
+            mask = np.zeros((8, 8), dtype=np.uint8)
+            mask[2:6, 2:6] = 1
+
+            service = object.__new__(MedicalPatchNetService)
+            service.config = type(
+                "Config",
+                (),
+                {"image_size": 8},
+            )()
+            image_orig, _crop_box, tensor, roi_source = service._load_and_preprocess(
+                image_path,
+                mask_array=mask,
+            )
+
+        self.assertEqual(roi_source, "lung_segmented_image")
+        self.assertEqual(tensor.shape[-2:], (8, 8))
+        self.assertEqual(np.asarray(image_orig)[0, 0], 0)
+        self.assertEqual(np.asarray(image_orig)[3, 3], 120)
+
 
 if __name__ == "__main__":
     unittest.main()

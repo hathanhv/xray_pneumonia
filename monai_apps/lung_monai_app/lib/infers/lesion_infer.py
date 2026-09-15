@@ -26,6 +26,9 @@ class LesionLocalizationInfer:
         top_k=5,
         include_overlay=True,
         flip_display_vertical=False,
+        lung_model_dir=None,
+        lung_threshold=0.5,
+        auto_lung_segmentation=True,
     ):
         try:
             from monailabel.interfaces.tasks.infer_v2 import InferTask, InferType
@@ -35,6 +38,10 @@ class LesionLocalizationInfer:
             ) from error
 
         self.studies = Path(studies) if studies else None
+        self.lung_model_dir = Path(lung_model_dir) if lung_model_dir else None
+        self.lung_threshold = float(lung_threshold)
+        self.auto_lung_segmentation = self._as_bool(auto_lung_segmentation)
+        self._lung_infer = None
         checkpoint = Path(checkpoint_path) if checkpoint_path else None
         self.service = MedicalPatchNetService(
             MedicalPatchNetConfig(
@@ -66,6 +73,7 @@ class LesionLocalizationInfer:
                         "shift_pixels": int(shift_pixels),
                         "mask_logit_threshold": float(mask_logit_threshold),
                         "accepts_lung_label": True,
+                        "auto_lung_segmentation": outer.auto_lung_segmentation,
                     },
                 )
                 self.outer = outer
@@ -103,8 +111,33 @@ class LesionLocalizationInfer:
             if label_value
             else None
         )
-        result = self.service.predict_path(image_path, mask_path=label_path)
+        mask_array = None
+        if label_path is None and self.auto_lung_segmentation:
+            mask_array = self._predict_lung_mask(image_path)
+        result = self.service.predict_path(
+            image_path,
+            mask_path=label_path,
+            mask_array=mask_array,
+        )
         return None, result.to_dict()
+
+    def _predict_lung_mask(self, image_path):
+        if self.lung_model_dir is None:
+            return None
+        if self._lung_infer is None:
+            from lib.infers.lung_infer import LungSegmentationInfer
+
+            self._lung_infer = LungSegmentationInfer(
+                model_dir=self.lung_model_dir,
+                studies=self.studies,
+                threshold=self.lung_threshold,
+            )
+
+        image_array, _reference_info = self._lung_infer._read_image(image_path)
+        mask_array = self._lung_infer._predict_array(image_array)
+        while getattr(mask_array, "ndim", 0) > 2:
+            mask_array = mask_array[mask_array.shape[0] // 2]
+        return mask_array
 
     def _resolve_path(self, value, name, use_studies=True):
         if not value:

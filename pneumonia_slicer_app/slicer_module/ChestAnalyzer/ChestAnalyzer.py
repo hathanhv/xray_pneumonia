@@ -479,6 +479,7 @@ class ChestAnalyzerWidget(ScriptedLoadableModuleWidget):
 
             lesion_result = self.logic.run_medicalpatchnet_lesion(
                 volume_node=volume_node,
+                mask_node=mask_node,
                 server_url=server_url,
             )
             lesion_node = self.logic.load_lesion_overlay(
@@ -830,29 +831,51 @@ class ChestAnalyzerLogic(ScriptedLoadableModuleLogic):
 
     # -- MedicalPatchNet lesion + CXFormer result-only classification -------
 
-    def run_medicalpatchnet_lesion(self, volume_node, server_url):
+    def run_medicalpatchnet_lesion(self, volume_node, server_url, mask_node=None):
         """Run the original MedicalPatchNet lesion-localization endpoint."""
         temp_dir = tempfile.gettempdir()
         image_path = os.path.join(temp_dir, "slicer_xray_lesion_input.png")
+        mask_path = os.path.join(temp_dir, "slicer_xray_lesion_lung_mask.png")
         self.save_volume_as_png(volume_node, image_path)
+        if mask_node is not None:
+            self.save_mask_as_png(mask_node, volume_node, mask_path)
 
         url = server_url.rstrip("/") + "/infer/lesion_localization"
         params = {"output": "json"}
-        form = {"params": json.dumps({"analysis_scope": "full_image"})}
+        request_params = {
+            "analysis_scope": "lung_segmented_image" if mask_node is not None else "auto_lung_segmentation",
+            "roi_source": "edited_lung_mask" if mask_node is not None else "auto_lung_segmentation",
+        }
+        form = {"params": json.dumps(request_params)}
         self.debug_log(
             "medicalpatchnet lesion request",
             url=url,
             image_path=image_path,
+            mask_path=mask_path if mask_node is not None else None,
+            request_params=request_params,
         )
 
         with open(image_path, "rb") as image_file:
-            response = requests.post(
-                url,
-                params=params,
-                data=form,
-                files={"file": ("xray.png", image_file, "image/png")},
-                timeout=900,
-            )
+            files = {"file": ("xray.png", image_file, "image/png")}
+            mask_file = None
+            try:
+                if mask_node is not None:
+                    mask_file = open(mask_path, "rb")
+                    files["label"] = (
+                        "lung_mask.png",
+                        mask_file,
+                        "image/png",
+                    )
+                response = requests.post(
+                    url,
+                    params=params,
+                    data=form,
+                    files=files,
+                    timeout=900,
+                )
+            finally:
+                if mask_file is not None:
+                    mask_file.close()
 
         self.debug_log(
             "medicalpatchnet lesion response",
@@ -1770,6 +1793,7 @@ class ChestAnalyzerLogic(ScriptedLoadableModuleLogic):
         attribute_name,
     ):
         from PIL import Image
+        import vtk
 
         output_dir = ChestAnalyzerLogic.debug_output_dir()
         png_path = os.path.join(output_dir, f"{name}_native_loader_input.png")
@@ -1790,6 +1814,9 @@ class ChestAnalyzerLogic(ScriptedLoadableModuleLogic):
                 "ChestAnalyzer.SourceVolumeID",
                 reference_volume.GetID(),
             )
+            matrix = vtk.vtkMatrix4x4()
+            reference_volume.GetIJKToRASMatrix(matrix)
+            overlay_node.SetIJKToRASMatrix(matrix)
 
         overlay_node.CreateDefaultDisplayNodes()
         ChestAnalyzerLogic.debug_log(
@@ -1798,7 +1825,7 @@ class ChestAnalyzerLogic(ScriptedLoadableModuleLogic):
             shape=overlay.shape,
             attribute=attribute_name,
             png_path=png_path,
-            orientation_strategy="slicer_native_png_loader",
+            orientation_strategy="slicer_native_png_loader_with_reference_geometry",
         )
         return overlay_node
 

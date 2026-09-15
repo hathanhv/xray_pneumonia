@@ -151,6 +151,7 @@ class MedicalPatchNetService:
         self,
         image_path: Path,
         mask_path: Optional[Path] = None,
+        mask_array: Optional[np.ndarray] = None,
     ) -> MedicalPatchNetResult:
         image_path = Path(image_path)
         mask_path = Path(mask_path) if mask_path else None
@@ -159,6 +160,7 @@ class MedicalPatchNetService:
         image_orig, crop_box, input_tensor, roi_source = self._load_and_preprocess(
             image_path,
             mask_path=mask_path,
+            mask_array=mask_array,
         )
         input_tensor = input_tensor.to(device)
 
@@ -198,7 +200,13 @@ class MedicalPatchNetService:
             forward_grid_count=(self.config.patch_size // self.config.shift_pixels) ** 2,
             probability_threshold=float(self.config.probability_threshold),
             roi_source=roi_source,
-            lung_label_source=str(mask_path) if mask_path else None,
+            lung_label_source=(
+                str(mask_path)
+                if mask_path
+                else "auto_lung_segmentation"
+                if mask_array is not None
+                else None
+            ),
             overlay_base64=overlay_base64,
         )
 
@@ -273,12 +281,16 @@ class MedicalPatchNetService:
         self,
         image_path: Path,
         mask_path: Optional[Path] = None,
+        mask_array: Optional[np.ndarray] = None,
     ):
         import torchvision.transforms.functional as TF
 
         image_orig = Image.open(image_path).convert("L")
         roi_source = "input_image"
-        if mask_path:
+        if mask_array is not None:
+            image_orig = self._apply_lung_mask(image_orig, mask_array)
+            roi_source = "lung_segmented_image"
+        elif mask_path:
             mask = self._read_lung_mask(mask_path)
             image_orig = self._apply_lung_mask(image_orig, mask)
             roi_source = "lung_segmented_image"
