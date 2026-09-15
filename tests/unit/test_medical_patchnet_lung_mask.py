@@ -60,10 +60,10 @@ class MedicalPatchNetLungMaskTests(unittest.TestCase):
 
         with tempfile.TemporaryDirectory() as tmpdir:
             image_path = Path(tmpdir) / "xray.png"
-            image = np.full((8, 8), 120, dtype=np.uint8)
+            image = np.full((8, 10), 120, dtype=np.uint8)
             Image.fromarray(image, mode="L").save(image_path)
-            mask = np.zeros((8, 8), dtype=np.uint8)
-            mask[2:6, 2:6] = 1
+            mask = np.zeros((8, 10), dtype=np.uint8)
+            mask[2:6, 2:8] = 1
 
             service = object.__new__(MedicalPatchNetService)
             service.config = type(
@@ -84,9 +84,12 @@ class MedicalPatchNetLungMaskTests(unittest.TestCase):
             )
 
         self.assertEqual(roi_source, "lung_segmentation_crop")
-        self.assertEqual(image_orig.size, (4, 4))
+        self.assertEqual(image_orig.size, (6, 6))
         self.assertEqual(tensor.shape[-2:], (8, 8))
-        self.assertEqual(np.asarray(image_orig)[0, 0], 120)
+        image_array = np.asarray(image_orig)
+        self.assertEqual(image_array[:, 0].max(), 0)
+        self.assertEqual(image_array[:, -1].max(), 0)
+        self.assertEqual(image_array[1:5, 1:5].min(), 120)
 
 
 if __name__ == "__main__":

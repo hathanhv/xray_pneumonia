@@ -12,10 +12,12 @@ if (-not (Test-Path -LiteralPath $PythonExe)) {
 }
 
 Set-Location -LiteralPath $ProjectRoot
+$StudiesDir = "data\test"
+New-Item -ItemType Directory -Force -Path $StudiesDir | Out-Null
 
 & $PythonExe -m monailabel.main start_server `
     --app "monai_apps\lung_monai_app" `
-    --studies "data\qc\fail_qc\images" `
+    --studies $StudiesDir `
     --conf "models" "all" `
     --conf "anatomy_device" "cpu" `
     --conf "anatomy_num_threads" "2" `

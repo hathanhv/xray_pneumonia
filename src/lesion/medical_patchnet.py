@@ -103,7 +103,7 @@ class MedicalPatchNetConfig:
     pad_right: int = 90
     pad_top: int = 60
     pad_bottom: int = 8
-    max_bottom_ratio: float = 0.75
+    max_bottom_ratio: float = 1.0
 
 
 @dataclass(frozen=True)
@@ -300,8 +300,8 @@ class MedicalPatchNetService:
             image_orig = self._crop_to_lung_roi(image_orig, mask)
             roi_source = "lung_segmentation_crop"
 
-        image_crop, crop_box = self._center_square_crop(image_orig)
-        tensor = TF.to_tensor(image_crop)
+        image_orig, crop_box = self._pad_to_square(image_orig)
+        tensor = TF.to_tensor(image_orig)
         tensor = TF.resize(
             tensor,
             [self.config.image_size, self.config.image_size],
@@ -413,17 +413,14 @@ class MedicalPatchNetService:
         }
 
     @staticmethod
-    def _center_square_crop(img: Image.Image):
+    def _pad_to_square(img: Image.Image, fill_value: int = 0):
         width, height = img.size
-        crop_len = min(width, height)
-        left = (width - crop_len) // 2
-        top = (height - crop_len) // 2
-        return img.crop((left, top, left + crop_len, top + crop_len)), (
-            left,
-            top,
-            left + crop_len,
-            top + crop_len,
-        )
+        side = max(width, height)
+        left = (side - width) // 2
+        top = (side - height) // 2
+        padded = Image.new(img.mode, (side, side), color=int(fill_value))
+        padded.paste(img, (left, top))
+        return padded, (0, 0, side, side)
 
     def _shifted_patch_logit_maps(self, model, img):
         shifts = [
