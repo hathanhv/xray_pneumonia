@@ -10,6 +10,7 @@ import numpy as np
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
+import torchvision.transforms.functional as TF
 from PIL import Image
 
 
@@ -98,12 +99,7 @@ class MedicalPatchNetConfig:
     mask_logit_threshold: float = 1.0
     top_k: int = 5
     include_overlay: bool = True
-    flip_display_vertical: bool = False
-    pad_left: int = 90
-    pad_right: int = 90
-    pad_top: int = 60
-    pad_bottom: int = 8
-    max_bottom_ratio: float = 1.0
+    flip_display_vertical: bool = True
 
 
 @dataclass(frozen=True)
@@ -116,9 +112,6 @@ class MedicalPatchNetResult:
     elapsed_s: float
     shift_pixels: int
     forward_grid_count: int
-    probability_threshold: float
-    roi_source: str = "input_image"
-    lung_label_source: Optional[str] = None
     overlay_base64: Optional[str] = None
 
     def to_dict(self) -> Dict:
@@ -136,9 +129,6 @@ class MedicalPatchNetResult:
             "elapsed_s": self.elapsed_s,
             "shift_pixels": self.shift_pixels,
             "forward_grid_count": self.forward_grid_count,
-            "probability_threshold": self.probability_threshold,
-            "roi_source": self.roi_source,
-            "lung_label_source": self.lung_label_source,
             "overlay_base64": self.overlay_base64,
             "model": "patrick-w/MedicalPatchNet",
             "localization_method": "patch_based_self_explainable_map",
@@ -152,21 +142,10 @@ class MedicalPatchNetService:
         self._model = None
         self._device = None
 
-    def predict_path(
-        self,
-        image_path: Path,
-        mask_path: Optional[Path] = None,
-        mask_array: Optional[np.ndarray] = None,
-    ) -> MedicalPatchNetResult:
-        image_path = Path(image_path)
-        mask_path = Path(mask_path) if mask_path else None
+    def predict_path(self, image_path: Path) -> MedicalPatchNetResult:
         start = time.perf_counter()
         model, device = self._get_model()
-        image_orig, crop_box, input_tensor, roi_source = self._load_and_preprocess(
-            image_path,
-            mask_path=mask_path,
-            mask_array=mask_array,
-        )
+        image_orig, crop_box, input_tensor = self._load_and_preprocess(image_path)
         input_tensor = input_tensor.to(device)
 
         with torch.inference_mode():
@@ -177,12 +156,7 @@ class MedicalPatchNetService:
         maps_np = patch_maps.detach().cpu().numpy()
         findings = self._build_findings(probabilities, maps_np, image_orig.size, crop_box)
         overlay_base64 = None
-        # Keep the original MedicalPatchNet Yellow-panel behavior: always render
-        # the top-k patch-evidence maps when overlay display is enabled, even if
-        # no class crosses the reporting threshold. The findings list still uses
-        # probability_threshold for PRESENT/ABSENT semantics; this overlay is
-        # visualization only.
-        if self.config.include_overlay:
+        if self.config.include_overlay and findings:
             overlay_base64 = self._paper_style_overlay_to_base64(
                 image_orig,
                 probabilities,
@@ -203,15 +177,6 @@ class MedicalPatchNetService:
             elapsed_s=elapsed_s,
             shift_pixels=self.config.shift_pixels,
             forward_grid_count=(self.config.patch_size // self.config.shift_pixels) ** 2,
-            probability_threshold=float(self.config.probability_threshold),
-            roi_source=roi_source,
-            lung_label_source=(
-                str(mask_path)
-                if mask_path
-                else "auto_lung_segmentation"
-                if mask_array is not None
-                else None
-            ),
             overlay_base64=overlay_base64,
         )
 
@@ -282,145 +247,29 @@ class MedicalPatchNetService:
         except RuntimeError:
             torch.set_num_threads(num_threads)
 
-    def _load_and_preprocess(
-        self,
-        image_path: Path,
-        mask_path: Optional[Path] = None,
-        mask_array: Optional[np.ndarray] = None,
-    ):
-        import torchvision.transforms.functional as TF
-
+    def _load_and_preprocess(self, image_path: Path):
         image_orig = Image.open(image_path).convert("L")
-        roi_source = "input_image"
-        if mask_array is not None:
-            image_orig = self._crop_to_lung_roi(image_orig, mask_array)
-            roi_source = "lung_segmentation_crop"
-        elif mask_path:
-            mask = self._read_lung_mask(mask_path)
-            image_orig = self._crop_to_lung_roi(image_orig, mask)
-            roi_source = "lung_segmentation_crop"
-
-        image_orig, crop_box = self._pad_to_square(image_orig)
-        tensor = TF.to_tensor(image_orig)
+        image_crop, crop_box = self._center_square_crop(image_orig)
+        tensor = TF.to_tensor(image_crop)
         tensor = TF.resize(
             tensor,
             [self.config.image_size, self.config.image_size],
             antialias=True,
         )
-        return image_orig, crop_box, tensor.unsqueeze(0), roi_source
+        return image_orig, crop_box, tensor.unsqueeze(0)
 
     @staticmethod
-    def _read_lung_mask(mask_path: Path) -> np.ndarray:
-        suffixes = "".join(mask_path.suffixes).lower()
-        if suffixes.endswith((".nii", ".nii.gz", ".nrrd", ".mha", ".mhd")):
-            try:
-                import SimpleITK as sitk
-            except ImportError as error:
-                raise ImportError(
-                    "Reading a MONAI Label lung mask requires SimpleITK"
-                ) from error
-            mask = sitk.GetArrayFromImage(sitk.ReadImage(str(mask_path)))
-            mask = np.squeeze(mask)
-            while mask.ndim > 2:
-                mask = mask[mask.shape[0] // 2]
-            # lung_infer writes 2-D NRRD labelmaps flipped vertically for Slicer
-            # display. Convert them back to source-image pixel coordinates before
-            # masking the MedicalPatchNet input.
-            return np.flipud(mask).astype(np.uint8)
-
-        mask = cv2.imread(str(mask_path), cv2.IMREAD_GRAYSCALE)
-        if mask is None:
-            raise ValueError(f"Could not read lung mask: {mask_path}")
-        return mask.astype(np.uint8)
-
-    @staticmethod
-    def _apply_lung_mask(image: Image.Image, mask: np.ndarray) -> Image.Image:
-        image_array = np.asarray(image.convert("L"), dtype=np.uint8)
-        if mask.ndim != 2:
-            raise ValueError(f"Expected a 2D lung mask, got shape {mask.shape}")
-        if mask.shape != image_array.shape:
-            mask = cv2.resize(
-                mask.astype(np.uint8),
-                (image_array.shape[1], image_array.shape[0]),
-                interpolation=cv2.INTER_NEAREST,
-            )
-
-        lung = mask > 0
-        if not lung.any():
-            raise ValueError("The supplied lung mask is empty or invalid")
-
-        masked = image_array.copy()
-        masked[~lung] = 0
-        return Image.fromarray(masked, mode="L")
-
-    def _crop_to_lung_roi(self, image: Image.Image, mask: np.ndarray) -> Image.Image:
-        image_array = np.asarray(image.convert("L"), dtype=np.uint8)
-        if mask.ndim != 2:
-            raise ValueError(f"Expected a 2D lung mask, got shape {mask.shape}")
-        if mask.shape != image_array.shape:
-            mask = cv2.resize(
-                mask.astype(np.uint8),
-                (image_array.shape[1], image_array.shape[0]),
-                interpolation=cv2.INTER_NEAREST,
-            )
-
-        crop, bbox = self._crop_by_mask(
-            image_array,
-            mask > 0,
-            pad_left=int(self.config.pad_left),
-            pad_right=int(self.config.pad_right),
-            pad_top=int(self.config.pad_top),
-            pad_bottom=int(self.config.pad_bottom),
-            max_bottom_ratio=float(self.config.max_bottom_ratio),
-        )
-        if crop is None:
-            raise ValueError("The supplied lung mask is empty or invalid")
-        return Image.fromarray(crop, mode="L")
-
-    @staticmethod
-    def _crop_by_mask(
-        image,
-        mask,
-        pad_left=90,
-        pad_right=90,
-        pad_top=60,
-        pad_bottom=8,
-        max_bottom_ratio=0.75,
-    ):
-        if image.shape[:2] != mask.shape[:2]:
-            raise ValueError(
-                f"image and mask size mismatch: image={image.shape[:2]}, mask={mask.shape[:2]}"
-            )
-        ys, xs = np.where(mask > 0)
-        if len(xs) == 0 or len(ys) == 0:
-            return None, None
-
-        height, width = image.shape[:2]
-        max_bottom = int(height * max_bottom_ratio)
-        x1 = max(int(xs.min()) - pad_left, 0)
-        y1 = max(int(ys.min()) - pad_top, 0)
-        x2 = min(int(xs.max()) + pad_right + 1, width)
-        y2 = min(int(ys.max()) + pad_bottom + 1, height)
-        if y2 > max_bottom:
-            y2 = max_bottom
-        if x2 <= x1 or y2 <= y1:
-            return None, None
-        return image[y1:y2, x1:x2].copy(), {
-            "x1": int(x1),
-            "y1": int(y1),
-            "x2": int(x2),
-            "y2": int(y2),
-        }
-
-    @staticmethod
-    def _pad_to_square(img: Image.Image, fill_value: int = 0):
+    def _center_square_crop(img: Image.Image):
         width, height = img.size
-        side = max(width, height)
-        left = (side - width) // 2
-        top = (side - height) // 2
-        padded = Image.new(img.mode, (side, side), color=int(fill_value))
-        padded.paste(img, (left, top))
-        return padded, (0, 0, side, side)
+        crop_len = min(width, height)
+        left = (width - crop_len) // 2
+        top = (height - crop_len) // 2
+        return img.crop((left, top, left + crop_len, top + crop_len)), (
+            left,
+            top,
+            left + crop_len,
+            top + crop_len,
+        )
 
     def _shifted_patch_logit_maps(self, model, img):
         shifts = [
@@ -498,18 +347,17 @@ class MedicalPatchNetService:
         findings = []
         for class_idx in ranked:
             probability = float(probabilities[class_idx])
-            pathology = PATHOLOGY_NAMES[int(class_idx)]
-            if probability < self.config.probability_threshold:
+            if probability < self.config.probability_threshold and len(findings) >= self.config.top_k:
                 break
-            if pathology == "No Finding":
-                continue
             signed_map = maps_np[int(class_idx)]
             mask_crop = signed_map > self.config.mask_logit_threshold
             findings.append(
                 {
-                    "finding": pathology,
+                    "finding": PATHOLOGY_NAMES[int(class_idx)],
                     "class_index": int(class_idx),
-                    "status": "present",
+                    "status": "present"
+                    if probability >= self.config.probability_threshold
+                    else "ranked",
                     "probability": probability,
                     "localization": {
                         "type": "patch_based_localization",
@@ -519,6 +367,8 @@ class MedicalPatchNetService:
                     },
                 }
             )
+            if len(findings) >= self.config.top_k:
+                break
         return findings
 
     @staticmethod
@@ -567,36 +417,11 @@ class MedicalPatchNetService:
         import matplotlib.colors as mcolors
         import matplotlib.pyplot as plt
 
-        # The montage is a visualization, while probabilities and patch maps were
-        # already computed at the model's native 512 px resolution.  Building five
-        # RGBA overlays at the original DICOM resolution (often 3k x 3k) can require
-        # several hundred MB per panel.  Render the montage on a bounded canvas and
-        # keep the original model outputs unchanged.
-        source_w, source_h = gray_img_pil.size
-        display_image = gray_img_pil.convert("L")
-        display_crop_box = tuple(int(value) for value in crop_box)
-        overlay_max_side = 768
-        if max(source_w, source_h) > overlay_max_side:
-            scale = float(overlay_max_side) / float(max(source_w, source_h))
-            display_w = max(1, int(round(source_w * scale)))
-            display_h = max(1, int(round(source_h * scale)))
-            display_image = display_image.resize(
-                (display_w, display_h),
-                resample=Image.Resampling.BILINEAR,
-            )
-            left, top, right, bottom = crop_box
-            display_crop_box = (
-                max(0, min(display_w - 1, int(round(left * scale)))),
-                max(0, min(display_h - 1, int(round(top * scale)))),
-                max(1, min(display_w, int(round(right * scale)))),
-                max(1, min(display_h, int(round(bottom * scale)))),
-            )
-
         top_indices = np.argsort(probabilities)[::-1][: self.config.top_k]
         valid_mask = self._paste_crop_map_to_original(
             np.ones((self.config.image_size, self.config.image_size), dtype=np.float32),
-            display_image.size,
-            display_crop_box,
+            gray_img_pil.size,
+            crop_box,
         ) > 0
 
         fig, axes = plt.subplots(
@@ -612,11 +437,11 @@ class MedicalPatchNetService:
             pathology = PATHOLOGY_NAMES[int(idx)]
             signed_original = self._paste_crop_map_to_original(
                 maps_np[int(idx)],
-                display_image.size,
-                display_crop_box,
+                gray_img_pil.size,
+                crop_box,
             )
             overlay = self._signed_overlay_array(
-                display_image,
+                gray_img_pil,
                 signed_original,
                 clip_value=clip_value,
                 valid_mask=valid_mask,
@@ -686,21 +511,14 @@ class MedicalPatchNetService:
         alpha=0.58,
         valid_mask=None,
     ):
-        gray = np.asarray(gray_img_pil.convert("L"), dtype=np.uint8)
+        gray = np.array(gray_img_pil.convert("L"))
         base = cv2.cvtColor(gray, cv2.COLOR_GRAY2RGB).astype(np.float32) / 255.0
-        signed = np.asarray(signed_map, dtype=np.float32) / np.float32(clip_value)
-        signed = np.clip(signed, -1.0, 1.0)
+        signed = np.clip(signed_map / clip_value, -1.0, 1.0)
         try:
             import matplotlib.pyplot as plt
 
-            # Build only a tiny 256-color LUT.  Calling the colormap directly on
-            # a 3k image creates a float64 RGBA array (~288 MiB at 3072 x 3072).
-            lut = plt.get_cmap("RdBu_r")(
-                np.linspace(0.0, 1.0, 256, dtype=np.float32),
-                bytes=True,
-            )[:, :3]
-            color_indices = np.rint((signed + 1.0) * 127.5).astype(np.uint8)
-            color = lut[color_indices].astype(np.float32) / 255.0
+            rgba = plt.get_cmap("RdBu_r")((signed + 1.0) / 2.0)
+            color = rgba[..., :3].astype(np.float32)
         except Exception:
             positive = np.clip(signed, 0.0, 1.0)
             negative = np.clip(-signed, 0.0, 1.0)
@@ -711,8 +529,6 @@ class MedicalPatchNetService:
         strength = np.clip(np.abs(signed), 0.0, 1.0)
         local_alpha = alpha * np.sqrt(strength)[..., None]
         if valid_mask is not None:
-            local_alpha *= np.asarray(valid_mask, dtype=np.float32)[..., None]
+            local_alpha *= valid_mask.astype(np.float32)[..., None]
         blended = base * (1.0 - local_alpha) + color * local_alpha
-        # Matplotlib retains every panel until savefig(); uint8 uses one quarter
-        # of the memory of float32 for those retained images.
-        return np.rint(np.clip(blended, 0, 1) * 255.0).astype(np.uint8)
+        return np.clip(blended, 0, 1)

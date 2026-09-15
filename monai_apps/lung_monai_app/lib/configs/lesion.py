@@ -36,8 +36,5 @@ class LesionConfig:
             mask_logit_threshold=self.conf.get("lesion_mask_logit_threshold", 1.0),
             top_k=self.conf.get("lesion_top_k", 5),
             include_overlay=self.conf.get("lesion_overlay", True),
-            flip_display_vertical=self.conf.get("lesion_flip_display_vertical", False),
-            lung_model_dir=self.app_dir / "model",
-            lung_threshold=self.conf.get("threshold", 0.5),
-            auto_lung_segmentation=self.conf.get("lesion_auto_lung_segmentation", True),
+            flip_display_vertical=self.conf.get("lesion_flip_display_vertical", True),
         )
