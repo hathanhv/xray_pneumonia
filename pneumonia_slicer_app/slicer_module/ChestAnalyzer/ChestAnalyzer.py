@@ -1738,7 +1738,6 @@ class ChestAnalyzerLogic(ScriptedLoadableModuleLogic):
 
         if attribute_name == "ChestAnalyzer.IsLesion":
             ChestAnalyzerLogic.remove_lesion_overlay()
-            overlay = np.flipud(overlay)
             return ChestAnalyzerLogic.create_standalone_overlay_volume(
                 overlay=overlay,
                 reference_volume=reference_volume,
@@ -1822,7 +1821,7 @@ class ChestAnalyzerLogic(ScriptedLoadableModuleLogic):
             shape=overlay.shape,
             attribute=attribute_name,
             png_path=png_path,
-            orientation_strategy="slicer_native_png_loader_flipud",
+            orientation_strategy="slicer_native_png_loader_no_flip",
         )
         return overlay_node
 
