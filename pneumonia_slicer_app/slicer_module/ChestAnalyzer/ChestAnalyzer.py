@@ -1738,6 +1738,7 @@ class ChestAnalyzerLogic(ScriptedLoadableModuleLogic):
 
         if attribute_name == "ChestAnalyzer.IsLesion":
             ChestAnalyzerLogic.remove_lesion_overlay()
+            overlay = np.flipud(overlay)
             return ChestAnalyzerLogic.create_standalone_overlay_volume(
                 overlay=overlay,
                 reference_volume=reference_volume,
@@ -1793,7 +1794,6 @@ class ChestAnalyzerLogic(ScriptedLoadableModuleLogic):
         attribute_name,
     ):
         from PIL import Image
-        import vtk
 
         output_dir = ChestAnalyzerLogic.debug_output_dir()
         png_path = os.path.join(output_dir, f"{name}_native_loader_input.png")
@@ -1814,9 +1814,6 @@ class ChestAnalyzerLogic(ScriptedLoadableModuleLogic):
                 "ChestAnalyzer.SourceVolumeID",
                 reference_volume.GetID(),
             )
-            matrix = vtk.vtkMatrix4x4()
-            reference_volume.GetIJKToRASMatrix(matrix)
-            overlay_node.SetIJKToRASMatrix(matrix)
 
         overlay_node.CreateDefaultDisplayNodes()
         ChestAnalyzerLogic.debug_log(
@@ -1825,7 +1822,7 @@ class ChestAnalyzerLogic(ScriptedLoadableModuleLogic):
             shape=overlay.shape,
             attribute=attribute_name,
             png_path=png_path,
-            orientation_strategy="slicer_native_png_loader_with_reference_geometry",
+            orientation_strategy="slicer_native_png_loader_flipud",
         )
         return overlay_node
 

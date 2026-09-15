@@ -52,7 +52,7 @@ class MedicalPatchNetLungMaskTests(unittest.TestCase):
 
         np.testing.assert_array_equal(loaded, mask)
 
-    def test_preprocess_accepts_auto_lung_mask_array(self):
+    def test_preprocess_crops_auto_lung_mask_array(self):
         try:
             import torchvision  # noqa: F401
         except ModuleNotFoundError:
@@ -69,17 +69,24 @@ class MedicalPatchNetLungMaskTests(unittest.TestCase):
             service.config = type(
                 "Config",
                 (),
-                {"image_size": 8},
+                {
+                    "image_size": 8,
+                    "pad_left": 0,
+                    "pad_right": 0,
+                    "pad_top": 0,
+                    "pad_bottom": 0,
+                    "max_bottom_ratio": 1.0,
+                },
             )()
             image_orig, _crop_box, tensor, roi_source = service._load_and_preprocess(
                 image_path,
                 mask_array=mask,
             )
 
-        self.assertEqual(roi_source, "lung_segmented_image")
+        self.assertEqual(roi_source, "lung_segmentation_crop")
+        self.assertEqual(image_orig.size, (4, 4))
         self.assertEqual(tensor.shape[-2:], (8, 8))
-        self.assertEqual(np.asarray(image_orig)[0, 0], 0)
-        self.assertEqual(np.asarray(image_orig)[3, 3], 120)
+        self.assertEqual(np.asarray(image_orig)[0, 0], 120)
 
 
 if __name__ == "__main__":

@@ -99,6 +99,11 @@ class MedicalPatchNetConfig:
     top_k: int = 5
     include_overlay: bool = True
     flip_display_vertical: bool = False
+    pad_left: int = 90
+    pad_right: int = 90
+    pad_top: int = 60
+    pad_bottom: int = 8
+    max_bottom_ratio: float = 0.75
 
 
 @dataclass(frozen=True)
@@ -288,12 +293,12 @@ class MedicalPatchNetService:
         image_orig = Image.open(image_path).convert("L")
         roi_source = "input_image"
         if mask_array is not None:
-            image_orig = self._apply_lung_mask(image_orig, mask_array)
-            roi_source = "lung_segmented_image"
+            image_orig = self._crop_to_lung_roi(image_orig, mask_array)
+            roi_source = "lung_segmentation_crop"
         elif mask_path:
             mask = self._read_lung_mask(mask_path)
-            image_orig = self._apply_lung_mask(image_orig, mask)
-            roi_source = "lung_segmented_image"
+            image_orig = self._crop_to_lung_roi(image_orig, mask)
+            roi_source = "lung_segmentation_crop"
 
         image_crop, crop_box = self._center_square_crop(image_orig)
         tensor = TF.to_tensor(image_crop)
@@ -347,6 +352,65 @@ class MedicalPatchNetService:
         masked = image_array.copy()
         masked[~lung] = 0
         return Image.fromarray(masked, mode="L")
+
+    def _crop_to_lung_roi(self, image: Image.Image, mask: np.ndarray) -> Image.Image:
+        image_array = np.asarray(image.convert("L"), dtype=np.uint8)
+        if mask.ndim != 2:
+            raise ValueError(f"Expected a 2D lung mask, got shape {mask.shape}")
+        if mask.shape != image_array.shape:
+            mask = cv2.resize(
+                mask.astype(np.uint8),
+                (image_array.shape[1], image_array.shape[0]),
+                interpolation=cv2.INTER_NEAREST,
+            )
+
+        crop, bbox = self._crop_by_mask(
+            image_array,
+            mask > 0,
+            pad_left=int(self.config.pad_left),
+            pad_right=int(self.config.pad_right),
+            pad_top=int(self.config.pad_top),
+            pad_bottom=int(self.config.pad_bottom),
+            max_bottom_ratio=float(self.config.max_bottom_ratio),
+        )
+        if crop is None:
+            raise ValueError("The supplied lung mask is empty or invalid")
+        return Image.fromarray(crop, mode="L")
+
+    @staticmethod
+    def _crop_by_mask(
+        image,
+        mask,
+        pad_left=90,
+        pad_right=90,
+        pad_top=60,
+        pad_bottom=8,
+        max_bottom_ratio=0.75,
+    ):
+        if image.shape[:2] != mask.shape[:2]:
+            raise ValueError(
+                f"image and mask size mismatch: image={image.shape[:2]}, mask={mask.shape[:2]}"
+            )
+        ys, xs = np.where(mask > 0)
+        if len(xs) == 0 or len(ys) == 0:
+            return None, None
+
+        height, width = image.shape[:2]
+        max_bottom = int(height * max_bottom_ratio)
+        x1 = max(int(xs.min()) - pad_left, 0)
+        y1 = max(int(ys.min()) - pad_top, 0)
+        x2 = min(int(xs.max()) + pad_right + 1, width)
+        y2 = min(int(ys.max()) + pad_bottom + 1, height)
+        if y2 > max_bottom:
+            y2 = max_bottom
+        if x2 <= x1 or y2 <= y1:
+            return None, None
+        return image[y1:y2, x1:x2].copy(), {
+            "x1": int(x1),
+            "y1": int(y1),
+            "x2": int(x2),
+            "y2": int(y2),
+        }
 
     @staticmethod
     def _center_square_crop(img: Image.Image):
