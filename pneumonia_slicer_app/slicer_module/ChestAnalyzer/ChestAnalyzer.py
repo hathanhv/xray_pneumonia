@@ -836,15 +836,21 @@ class ChestAnalyzerLogic(ScriptedLoadableModuleLogic):
         temp_dir = tempfile.gettempdir()
         image_path = os.path.join(temp_dir, "slicer_xray_lesion_input.png")
         mask_path = os.path.join(temp_dir, "slicer_xray_lesion_lung_mask.png")
-        self.save_volume_as_png(volume_node, image_path)
+        self.save_volume_as_png(volume_node, image_path, flip_vertical=True)
         if mask_node is not None:
-            self.save_mask_as_png(mask_node, volume_node, mask_path)
+            self.save_mask_as_png(
+                mask_node,
+                volume_node,
+                mask_path,
+                flip_vertical=True,
+            )
 
         url = server_url.rstrip("/") + "/infer/lesion_localization"
         params = {"output": "json"}
         request_params = {
-            "analysis_scope": "lung_segmented_image" if mask_node is not None else "auto_lung_segmentation",
+            "analysis_scope": "lung_segmentation_crop" if mask_node is not None else "auto_lung_segmentation",
             "roi_source": "edited_lung_mask" if mask_node is not None else "auto_lung_segmentation",
+            "slicer_export_flip_vertical": True,
         }
         form = {"params": json.dumps(request_params)}
         self.debug_log(
@@ -2033,14 +2039,17 @@ class ChestAnalyzerLogic(ScriptedLoadableModuleLogic):
         image = (image * 255).astype(np.uint8)
         return np.repeat(image[:, :, np.newaxis], 3, axis=2)
 
-    def save_volume_as_png(self, volume_node, output_path):
+    def save_volume_as_png(self, volume_node, output_path, flip_vertical=False):
+        import numpy as np
         from PIL import Image
 
         image = self._middle_slice(slicer.util.arrayFromVolume(volume_node))
         image = self._as_uint8_rgb(image)
+        if flip_vertical:
+            image = np.flipud(image)
         Image.fromarray(image).save(output_path)
 
-    def save_mask_as_png(self, mask_node, reference_volume, output_path):
+    def save_mask_as_png(self, mask_node, reference_volume, output_path, flip_vertical=False):
         import numpy as np
         from PIL import Image
 
@@ -2065,6 +2074,8 @@ class ChestAnalyzerLogic(ScriptedLoadableModuleLogic):
         try:
             mask = self._middle_slice(slicer.util.arrayFromVolume(source_node))
             mask = (np.asarray(mask) > 0).astype(np.uint8) * 255
+            if flip_vertical:
+                mask = np.flipud(mask)
             Image.fromarray(mask).save(output_path)
         finally:
             if temporary_labelmap is not None:
