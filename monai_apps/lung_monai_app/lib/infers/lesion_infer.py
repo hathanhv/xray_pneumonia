@@ -25,7 +25,7 @@ class LesionLocalizationInfer:
         mask_logit_threshold=5.0,
         top_k=5,
         include_overlay=True,
-        flip_display_vertical=True,
+        flip_display_vertical=False,
     ):
         try:
             from monailabel.interfaces.tasks.infer_v2 import InferTask, InferType
@@ -65,6 +65,7 @@ class LesionLocalizationInfer:
                         "device": ["cuda", "cpu"],
                         "shift_pixels": int(shift_pixels),
                         "mask_logit_threshold": float(mask_logit_threshold),
+                        "accepts_lung_label": True,
                     },
                 )
                 self.outer = outer
@@ -91,10 +92,21 @@ class LesionLocalizationInfer:
             request.get("image_path") or request.get("image"),
             name="image",
         )
-        result = self.service.predict_path(image_path)
+        label_value = (
+            request.get("label_path")
+            or request.get("label")
+            or request.get("lung_mask")
+            or request.get("lung_label")
+        )
+        label_path = (
+            self._resolve_path(label_value, name="label", use_studies=False)
+            if label_value
+            else None
+        )
+        result = self.service.predict_path(image_path, mask_path=label_path)
         return None, result.to_dict()
 
-    def _resolve_path(self, value, name):
+    def _resolve_path(self, value, name, use_studies=True):
         if not value:
             raise ValueError(f"Lesion localization request missing {name}")
 
@@ -102,7 +114,7 @@ class LesionLocalizationInfer:
         if path.exists():
             return path
 
-        if self.studies:
+        if use_studies and self.studies:
             candidate = self.studies / str(value)
             if candidate.exists():
                 return candidate

@@ -10,7 +10,6 @@ import numpy as np
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
-import torchvision.transforms.functional as TF
 from PIL import Image
 
 
@@ -113,6 +112,8 @@ class MedicalPatchNetResult:
     shift_pixels: int
     forward_grid_count: int
     probability_threshold: float
+    roi_source: str = "input_image"
+    lung_label_source: Optional[str] = None
     overlay_base64: Optional[str] = None
 
     def to_dict(self) -> Dict:
@@ -131,6 +132,8 @@ class MedicalPatchNetResult:
             "shift_pixels": self.shift_pixels,
             "forward_grid_count": self.forward_grid_count,
             "probability_threshold": self.probability_threshold,
+            "roi_source": self.roi_source,
+            "lung_label_source": self.lung_label_source,
             "overlay_base64": self.overlay_base64,
             "model": "patrick-w/MedicalPatchNet",
             "localization_method": "patch_based_self_explainable_map",
@@ -144,10 +147,19 @@ class MedicalPatchNetService:
         self._model = None
         self._device = None
 
-    def predict_path(self, image_path: Path) -> MedicalPatchNetResult:
+    def predict_path(
+        self,
+        image_path: Path,
+        mask_path: Optional[Path] = None,
+    ) -> MedicalPatchNetResult:
+        image_path = Path(image_path)
+        mask_path = Path(mask_path) if mask_path else None
         start = time.perf_counter()
         model, device = self._get_model()
-        image_orig, crop_box, input_tensor = self._load_and_preprocess(image_path)
+        image_orig, crop_box, input_tensor, roi_source = self._load_and_preprocess(
+            image_path,
+            mask_path=mask_path,
+        )
         input_tensor = input_tensor.to(device)
 
         with torch.inference_mode():
@@ -185,6 +197,8 @@ class MedicalPatchNetService:
             shift_pixels=self.config.shift_pixels,
             forward_grid_count=(self.config.patch_size // self.config.shift_pixels) ** 2,
             probability_threshold=float(self.config.probability_threshold),
+            roi_source=roi_source,
+            lung_label_source=str(mask_path) if mask_path else None,
             overlay_base64=overlay_base64,
         )
 
@@ -255,8 +269,20 @@ class MedicalPatchNetService:
         except RuntimeError:
             torch.set_num_threads(num_threads)
 
-    def _load_and_preprocess(self, image_path: Path):
+    def _load_and_preprocess(
+        self,
+        image_path: Path,
+        mask_path: Optional[Path] = None,
+    ):
+        import torchvision.transforms.functional as TF
+
         image_orig = Image.open(image_path).convert("L")
+        roi_source = "input_image"
+        if mask_path:
+            mask = self._read_lung_mask(mask_path)
+            image_orig = self._apply_lung_mask(image_orig, mask)
+            roi_source = "lung_segmented_image"
+
         image_crop, crop_box = self._center_square_crop(image_orig)
         tensor = TF.to_tensor(image_crop)
         tensor = TF.resize(
@@ -264,7 +290,51 @@ class MedicalPatchNetService:
             [self.config.image_size, self.config.image_size],
             antialias=True,
         )
-        return image_orig, crop_box, tensor.unsqueeze(0)
+        return image_orig, crop_box, tensor.unsqueeze(0), roi_source
+
+    @staticmethod
+    def _read_lung_mask(mask_path: Path) -> np.ndarray:
+        suffixes = "".join(mask_path.suffixes).lower()
+        if suffixes.endswith((".nii", ".nii.gz", ".nrrd", ".mha", ".mhd")):
+            try:
+                import SimpleITK as sitk
+            except ImportError as error:
+                raise ImportError(
+                    "Reading a MONAI Label lung mask requires SimpleITK"
+                ) from error
+            mask = sitk.GetArrayFromImage(sitk.ReadImage(str(mask_path)))
+            mask = np.squeeze(mask)
+            while mask.ndim > 2:
+                mask = mask[mask.shape[0] // 2]
+            # lung_infer writes 2-D NRRD labelmaps flipped vertically for Slicer
+            # display. Convert them back to source-image pixel coordinates before
+            # masking the MedicalPatchNet input.
+            return np.flipud(mask).astype(np.uint8)
+
+        mask = cv2.imread(str(mask_path), cv2.IMREAD_GRAYSCALE)
+        if mask is None:
+            raise ValueError(f"Could not read lung mask: {mask_path}")
+        return mask.astype(np.uint8)
+
+    @staticmethod
+    def _apply_lung_mask(image: Image.Image, mask: np.ndarray) -> Image.Image:
+        image_array = np.asarray(image.convert("L"), dtype=np.uint8)
+        if mask.ndim != 2:
+            raise ValueError(f"Expected a 2D lung mask, got shape {mask.shape}")
+        if mask.shape != image_array.shape:
+            mask = cv2.resize(
+                mask.astype(np.uint8),
+                (image_array.shape[1], image_array.shape[0]),
+                interpolation=cv2.INTER_NEAREST,
+            )
+
+        lung = mask > 0
+        if not lung.any():
+            raise ValueError("The supplied lung mask is empty or invalid")
+
+        masked = image_array.copy()
+        masked[~lung] = 0
+        return Image.fromarray(masked, mode="L")
 
     @staticmethod
     def _center_square_crop(img: Image.Image):
