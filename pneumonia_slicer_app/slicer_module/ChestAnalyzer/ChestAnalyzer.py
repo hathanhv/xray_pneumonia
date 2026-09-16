@@ -51,7 +51,7 @@ class ChestAnalyzer(ScriptedLoadableModule):
 
 # Custom Slicer layout: Yellow (top full) + Red/Green (bottom)
 _CHEST_ANALYZER_LAYOUT_ID = 950
-_CHEST_ANALYZER_DEBUG_BUILD = "debug-2026-09-16-lesion-text-orientation"
+_CHEST_ANALYZER_DEBUG_BUILD = "debug-2026-09-06-lesion-png-loader"
 _CHEST_ANALYZER_LAYOUT_XML = """
 <layout type="vertical" split="true">
   <item splitSize="520">
@@ -937,10 +937,6 @@ class ChestAnalyzerLogic(ScriptedLoadableModuleLogic):
             slicer.util.arrayFromVolume(reference_volume)
         )
         reference = ChestAnalyzerLogic._as_uint8_rgb(reference)
-        # arrayFromVolume() returns VTK order: row 0 = bottom.
-        # Raw mask PNGs from the server are in natural order (row 0 = top).
-        # Flip the reference so mask colours land on the correct anatomy.
-        reference = np.flipud(reference)
         height, width = reference.shape[:2]
         target = reference
         x1 = y1 = 0
@@ -995,20 +991,10 @@ class ChestAnalyzerLogic(ScriptedLoadableModuleLogic):
             mask_source=mask_source,
             anatomy_pixels=int(anatomy_pixels.sum()),
         )
-        # create_overlay_volume() routes RGB overlays through _make_rgb_volume_node()
-        # which handles the VTK Y-flip internally.  Return the overlay in natural order.
         return overlay
 
     @staticmethod
     def create_overlay_volume(overlay, reference_volume, name, attribute_name):
-        import numpy as np
-        overlay = np.asarray(overlay)
-        if overlay.ndim == 3 and overlay.shape[2] == 3:
-            # RGB overlay: use direct VTK node creation to avoid reshape errors
-            # that occur when CloneVolumeGeneric copies a 1-channel ScalarVolumeNode.
-            return ChestAnalyzerLogic._make_rgb_volume_node(
-                overlay, reference_volume, name, attribute_name
-            )
         volumes_logic = slicer.modules.volumes.logic()
         overlay_node = volumes_logic.CloneVolumeGeneric(
             slicer.mrmlScene,
@@ -1027,52 +1013,6 @@ class ChestAnalyzerLogic(ScriptedLoadableModuleLogic):
         slicer.util.updateVolumeFromArray(
             overlay_node,
             overlay[None, ...],
-        )
-        overlay_node.CreateDefaultDisplayNodes()
-        return overlay_node
-
-    @staticmethod
-    def _make_rgb_volume_node(overlay_rgb, reference_volume, name, attribute_name):
-        """
-        Create a vtkMRMLVectorVolumeNode from an (H, W, 3) uint8 numpy array.
-        Copies the IJK-to-RAS matrix from reference_volume for correct alignment.
-        Works regardless of whether reference_volume is scalar or vector.
-        """
-        import numpy as np
-        import vtk
-        from vtk.util import numpy_support
-
-        overlay_rgb = np.asarray(overlay_rgb, dtype=np.uint8)
-        # The overlay from the server is natural order (row 0 = top).
-        # The IJK-to-RAS matrix copied from reference_volume has negative Y, so
-        # Slicer flips Y on display.  Pre-flip so the result displays right-side up.
-        overlay_rgb = np.flipud(overlay_rgb)
-        h, w = overlay_rgb.shape[:2]
-
-        # Build VTK image data: VTK expects (x, y, z) = (w, h, 1) in Fortran order
-        flat = overlay_rgb.flatten()          # row-major (H, W, 3) -> 1-D
-        vtk_array = numpy_support.numpy_to_vtk(flat, deep=True, array_type=vtk.VTK_UNSIGNED_CHAR)
-        vtk_array.SetNumberOfComponents(3)
-        vtk_array.SetName("scalars")
-
-        img = vtk.vtkImageData()
-        img.SetDimensions(w, h, 1)
-        img.GetPointData().SetScalars(vtk_array)
-
-        # Create the MRML node
-        overlay_node = slicer.mrmlScene.AddNewNodeByClass("vtkMRMLVectorVolumeNode", name)
-        overlay_node.SetAndObserveImageData(img)
-
-        # Copy IJK->RAS matrix from the reference so the overlay aligns spatially
-        ijk_to_ras = vtk.vtkMatrix4x4()
-        reference_volume.GetIJKToRASMatrix(ijk_to_ras)
-        overlay_node.SetIJKToRASMatrix(ijk_to_ras)
-
-        overlay_node.SetHideFromEditors(True)
-        overlay_node.SetAttribute(attribute_name, "1")
-        overlay_node.SetAttribute(
-            "ChestAnalyzer.SourceVolumeID",
-            reference_volume.GetID(),
         )
         overlay_node.CreateDefaultDisplayNodes()
         return overlay_node
@@ -1505,10 +1445,6 @@ class ChestAnalyzerLogic(ScriptedLoadableModuleLogic):
             slicer.util.arrayFromVolume(reference_volume)
         )
         reference = ChestAnalyzerLogic._as_uint8_rgb(reference)
-        # arrayFromVolume() is VTK order (row 0 = bottom); GradCAM overlay from
-        # the server is natural order (row 0 = top). Flip reference to match.
-        import numpy as _np_ref
-        reference = _np_ref.flipud(reference)
         height, width = reference.shape[:2]
 
         if bbox:
@@ -1538,11 +1474,27 @@ class ChestAnalyzerLogic(ScriptedLoadableModuleLogic):
         if attribute_name == "ChestAnalyzer.IsGradCAM":
             ChestAnalyzerLogic.remove_gradcam_overlay()
 
-        # Use direct VTK node creation to avoid reshape errors when
-        # CloneVolumeGeneric copies a 1-channel ScalarVolumeNode.
-        return ChestAnalyzerLogic._make_rgb_volume_node(
-            overlay, reference_volume, name, attribute_name
+        volumes_logic = slicer.modules.volumes.logic()
+        overlay_node = volumes_logic.CloneVolumeGeneric(
+            slicer.mrmlScene,
+            reference_volume,
+            name,
+            False,
         )
+        if overlay_node is None:
+            raise RuntimeError("Could not clone the source X-ray volume.")
+        overlay_node.SetHideFromEditors(True)
+        overlay_node.SetAttribute(attribute_name, "1")
+        overlay_node.SetAttribute(
+            "ChestAnalyzer.SourceVolumeID",
+            reference_volume.GetID(),
+        )
+        slicer.util.updateVolumeFromArray(
+            overlay_node,
+            overlay[np.newaxis, ...],
+        )
+        overlay_node.CreateDefaultDisplayNodes()
+        return overlay_node
 
     @staticmethod
     def create_standalone_overlay_volume(
@@ -1565,14 +1517,6 @@ class ChestAnalyzerLogic(ScriptedLoadableModuleLogic):
         if overlay_node is None:
             raise RuntimeError(f"Could not load overlay PNG as volume: {png_path}")
 
-        # loadVolume() creates a node with a [-1,-1,+1] IJK-to-RAS matrix that
-        # flips both X and Y axes on display.  Override with an identity matrix
-        # so the image displays exactly as saved — no flips, no mirror.
-        import vtk as _vtk
-        identity = _vtk.vtkMatrix4x4()
-        identity.Identity()
-        overlay_node.SetIJKToRASMatrix(identity)
-
         overlay_node.SetHideFromEditors(True)
         overlay_node.SetAttribute(attribute_name, "1")
         if reference_volume is not None:
@@ -1588,7 +1532,7 @@ class ChestAnalyzerLogic(ScriptedLoadableModuleLogic):
             shape=overlay.shape,
             attribute=attribute_name,
             png_path=png_path,
-            orientation_strategy="slicer_native_png_loader_identity_matrix",
+            orientation_strategy="slicer_native_png_loader",
         )
         return overlay_node
 
@@ -1750,14 +1694,11 @@ class ChestAnalyzerLogic(ScriptedLoadableModuleLogic):
         return np.repeat(image[:, :, np.newaxis], 3, axis=2)
 
     def save_volume_as_png(self, volume_node, output_path):
-        import numpy as np
         from PIL import Image
 
         image = self._middle_slice(slicer.util.arrayFromVolume(volume_node))
         image = self._as_uint8_rgb(image)
-        # slicer.util.arrayFromVolume() returns VTK order: row 0 = bottom of image.
-        # Inference models expect natural order (row 0 = top), so flip vertically.
-        Image.fromarray(np.flipud(image)).save(output_path)
+        Image.fromarray(image).save(output_path)
 
     def save_mask_as_png(self, mask_node, reference_volume, output_path):
         import numpy as np
@@ -1784,8 +1725,7 @@ class ChestAnalyzerLogic(ScriptedLoadableModuleLogic):
         try:
             mask = self._middle_slice(slicer.util.arrayFromVolume(source_node))
             mask = (np.asarray(mask) > 0).astype(np.uint8) * 255
-            # Flip vertically to match save_volume_as_png natural order
-            Image.fromarray(np.flipud(mask)).save(output_path)
+            Image.fromarray(mask).save(output_path)
         finally:
             if temporary_labelmap is not None:
                 slicer.mrmlScene.RemoveNode(temporary_labelmap)
