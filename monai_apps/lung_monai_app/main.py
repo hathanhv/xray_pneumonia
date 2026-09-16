@@ -4,6 +4,7 @@ from typing import Dict
 
 from lib.configs.anatomy import AnatomyConfig
 from lib.configs.classifier import ClassifierConfig
+from lib.configs.cxformer_pathology import CXformerPathologyConfig
 from lib.configs.lesion import LesionConfig
 from lib.configs.lung_segmentation import LungSegmentationConfig
 from lib.strategies.review import ReviewFirst, ReviewRandom
@@ -40,6 +41,7 @@ class MyApp(MONAILabelApp):
             "classifier",
             "anatomy_segmentation",
             "lesion_localization",
+            "cxformer_pathology",
         }
         if "all" in requested_models:
             requested_models = supported_models
@@ -89,6 +91,15 @@ class MyApp(MONAILabelApp):
             if "lesion_localization" in requested_models
             else None
         )
+        self.cxformer_config = (
+            CXformerPathologyConfig(
+                app_dir=self.app_dir,
+                studies=self.studies,
+                conf=self.conf,
+            )
+            if "cxformer_pathology" in requested_models
+            else None
+        )
 
         super().__init__(
             app_dir=str(self.app_dir),
@@ -117,6 +128,9 @@ class MyApp(MONAILabelApp):
         if self.lesion_config:
             logger.info("Registering inference model: lesion_localization")
             infers["lesion_localization"] = self.lesion_config.infer()
+        if self.cxformer_config:
+            logger.info("Registering inference model: cxformer_pathology")
+            infers["cxformer_pathology"] = self.cxformer_config.infer()
         return infers
 
     def init_trainers(self) -> Dict[str, TrainTask]:
@@ -140,7 +154,10 @@ def main():
     parser.add_argument(
         "--model",
         default="lung_segmentation",
-        help="lung_segmentation, classifier, all, or a comma-separated list",
+        help=(
+            "lung_segmentation, classifier, anatomy_segmentation, "
+            "lesion_localization, cxformer_pathology, all, or a comma-separated list"
+        ),
     )
     args = parser.parse_args()
 

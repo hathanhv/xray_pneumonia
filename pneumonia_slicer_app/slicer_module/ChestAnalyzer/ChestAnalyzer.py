@@ -11,6 +11,7 @@ Integrates MONAI Label for:
 """
 
 import base64
+import html
 import json
 import os
 import tempfile
@@ -221,6 +222,26 @@ class ChestAnalyzerWidget(ScriptedLoadableModuleWidget):
         ):
             self.layout.addWidget(lbl)
 
+        # -- CXFormer multi-label results --------------------------------
+        sep4 = qt.QFrame()
+        sep4.setFrameShape(qt.QFrame.HLine)
+        self.layout.addWidget(sep4)
+
+        cxformerHeader = qt.QLabel("CXFormer - 14-label Classification")
+        cxformerHeader.setStyleSheet("font-size: 14px; font-weight: bold;")
+        self.layout.addWidget(cxformerHeader)
+
+        self.cxformerStatusLabel = qt.QLabel("Status: -")
+        self.cxformerTimingLabel = qt.QLabel("  Runtime:     -")
+        self.cxformerProbabilityTable = qt.QTextBrowser()
+        self.cxformerProbabilityTable.minimumHeight = 260
+        self.cxformerProbabilityTable.setHtml(
+            "<p>Run ChestAnalyze to display CXFormer probabilities.</p>"
+        )
+        self.layout.addWidget(self.cxformerStatusLabel)
+        self.layout.addWidget(self.cxformerTimingLabel)
+        self.layout.addWidget(self.cxformerProbabilityTable)
+
         self.layout.addStretch(1)
 
         # Pre-select the current Red-view volume
@@ -302,6 +323,7 @@ class ChestAnalyzerWidget(ScriptedLoadableModuleWidget):
         classify_result = None
         anatomy_result = None
         lesion_result = None
+        cxformer_result = None
 
         # ── Classification ───────────────────────────────────────────
         try:
@@ -424,12 +446,44 @@ class ChestAnalyzerWidget(ScriptedLoadableModuleWidget):
                 traceback=traceback.format_exc(),
             )
 
+        # -- CXFormer 14-label classification -------------------------
+        try:
+            self.cxformerStatusLabel.setText("Status: Running ...")
+            slicer.app.processEvents()
+
+            cxformer_result = self.logic.run_cxformer_multilabel(
+                volume_node=volume_node,
+                server_url=server_url,
+            )
+            scope = cxformer_result.get("analysis_scope", "full_image")
+            scope_label = "full image" if scope == "full_image" else scope
+            self.cxformerStatusLabel.setText(f"Status: Done - {scope_label}")
+            self.cxformerTimingLabel.setText(
+                f"  Runtime:     {cxformer_result.get('elapsed_s', 0):.2f}s"
+            )
+            self.cxformerProbabilityTable.setHtml(
+                self.cxformer_probability_html(cxformer_result)
+            )
+
+        except Exception as error:
+            errors.append(f"CXFormer 14-label inference failed: {error}")
+            self.cxformerStatusLabel.setText("Status: ERROR")
+            self.cxformerProbabilityTable.setHtml(
+                "<p style='color:orange'>CXFormer 14-label inference failed.</p>"
+            )
+            self.logic.debug_log(
+                "cxformer multilabel failed",
+                error=repr(error),
+                traceback=traceback.format_exc(),
+            )
+
         try:
             report_path = self.logic.export_chest_analyze_report(
                 volume_node=volume_node,
                 classify_result=classify_result,
                 anatomy_result=anatomy_result,
                 lesion_result=lesion_result,
+                cxformer_result=cxformer_result,
             )
             self.reportPathLabel.setText("Report JSON: " + report_path)
         except Exception as error:
@@ -452,6 +506,59 @@ class ChestAnalyzerWidget(ScriptedLoadableModuleWidget):
                 "ChestAnalyze complete.\n"
                 "Red: GradCAM  |  Green: Anatomy  |  Yellow: Lesion"
             )
+
+    @staticmethod
+    def cxformer_probability_html(cxformer_result):
+        probabilities = cxformer_result.get("probabilities", {})
+        thresholds = cxformer_result.get("thresholds", {})
+        if not probabilities:
+            return "<p>No CXFormer probabilities returned.</p>"
+
+        rows = []
+        ranked = sorted(
+            probabilities.items(),
+            key=lambda item: float(item[1]),
+            reverse=True,
+        )
+        for finding, value in ranked:
+            probability = float(value)
+            threshold = float(thresholds.get(finding, 0.5))
+            present = probability >= threshold
+            status = "PRESENT" if present else "ABSENT"
+            background = "#ffe2e2" if present else "#ffffff"
+            weight = "bold" if present else "normal"
+            rows.append(
+                "<tr style='background:{background};font-weight:{weight}'>"
+                "<td>{finding}</td>"
+                "<td>{probability:.1%}</td>"
+                "<td>{threshold:.1%}</td>"
+                "<td>{status}</td>"
+                "</tr>".format(
+                    background=background,
+                    weight=weight,
+                    finding=html.escape(str(finding)),
+                    probability=probability,
+                    threshold=threshold,
+                    status=status,
+                )
+            )
+
+        scope = cxformer_result.get("analysis_scope", "full_image")
+        if scope == "full_image":
+            scope_note = "<p><b>Input: full image.</b></p>"
+        else:
+            scope_note = f"<p><b>Input: {html.escape(str(scope))}.</b></p>"
+
+        return (
+            "<p><b>CXFormer 14-label classification</b></p>"
+            + scope_note
+            + "<table cellspacing='0' cellpadding='4' border='1' "
+            "style='border-collapse:collapse;width:100%'>"
+            "<tr style='background:#dddddd;font-weight:bold'>"
+            "<td>Finding</td><td>Probability</td><td>Threshold</td><td>Status</td></tr>"
+            + "".join(rows)
+            + "</table>"
+        )
 
 
 # ---------------------------------------------------------------------------
@@ -730,12 +837,64 @@ class ChestAnalyzerLogic(ScriptedLoadableModuleLogic):
         )
         return overlay_node
 
+    def run_cxformer_multilabel(self, volume_node, server_url):
+        """Run CXFormer as 14-label sidebar results only."""
+        temp_dir = tempfile.gettempdir()
+        image_path = os.path.join(temp_dir, "slicer_xray_cxformer_input.png")
+        self.save_volume_as_png(volume_node, image_path)
+
+        url = server_url.rstrip("/") + "/infer/cxformer_pathology"
+        params = {"output": "json"}
+        request_params = {
+            "include_localization": False,
+            "analysis_scope": "full_image",
+            "roi_source": "input_image",
+            "bbox_in_source_image": None,
+            "source_image_shape": None,
+            "cxformer_input_shape": None,
+        }
+        form = {"params": json.dumps(request_params)}
+        self.debug_log(
+            "cxformer multilabel request",
+            url=url,
+            image_path=image_path,
+            request_params=request_params,
+        )
+
+        with open(image_path, "rb") as image_file:
+            response = requests.post(
+                url,
+                params=params,
+                data=form,
+                files={"file": ("xray.png", image_file, "image/png")},
+                timeout=900,
+            )
+        self.debug_log(
+            "cxformer multilabel response",
+            status_code=response.status_code,
+            content_type=response.headers.get("content-type", ""),
+            content_length=len(response.content),
+        )
+
+        if response.status_code != 200:
+            raise RuntimeError(
+                f"CXFormer 14-label inference failed [{response.status_code}]: "
+                f"{response.text}"
+            )
+
+        result = response.json()
+        cxformer_result = result.get("params", result)
+        cxformer_result.update(request_params)
+        cxformer_result["overlay_base64"] = None
+        return cxformer_result
+
     def export_chest_analyze_report(
         self,
         volume_node,
         classify_result=None,
         anatomy_result=None,
         lesion_result=None,
+        cxformer_result=None,
     ):
         temp_dir = tempfile.gettempdir()
         source_name = volume_node.GetName() if volume_node else "unknown"
@@ -748,6 +907,14 @@ class ChestAnalyzerLogic(ScriptedLoadableModuleLogic):
                 "image_quality": "not_evaluated",
             },
             "classification": classify_result or {},
+            "cxformer_multilabel": {
+                "model": (cxformer_result or {}).get("model"),
+                "probabilities": (cxformer_result or {}).get("probabilities", {}),
+                "thresholds": (cxformer_result or {}).get("thresholds", {}),
+                "findings": (cxformer_result or {}).get("findings", []),
+                "analysis_scope": (cxformer_result or {}).get("analysis_scope"),
+                "roi_source": (cxformer_result or {}).get("roi_source"),
+            },
             "anatomy": self._report_anatomy(anatomy_result),
             "findings": (lesion_result or {}).get("findings", []),
             "measurements": {
@@ -761,6 +928,9 @@ class ChestAnalyzerLogic(ScriptedLoadableModuleLogic):
             "provenance": {
                 "anatomy_model": "ianpan/chest-x-ray-basic",
                 "finding_localization_model": "patrick-w/MedicalPatchNet",
+                "multilabel_classification_model": (cxformer_result or {}).get(
+                    "model", "cxformer_final_all15000"
+                ),
                 "classification_model": "mobilenet_2025_lung_crop_corrected",
                 "localization_method": "patch_based_self_explainable_map",
                 "human_reviewed": False,
@@ -768,6 +938,7 @@ class ChestAnalyzerLogic(ScriptedLoadableModuleLogic):
             "runtime": {
                 "lesion_elapsed_s": (lesion_result or {}).get("elapsed_s"),
                 "lesion_shift_pixels": (lesion_result or {}).get("shift_pixels"),
+                "cxformer_elapsed_s": (cxformer_result or {}).get("elapsed_s"),
             },
         }
         with open(report_path, "w", encoding="utf-8") as report_file:
