@@ -19,4 +19,6 @@ Set-Location -LiteralPath $ProjectRoot
     --conf "lesion_num_threads" "2" `
     --conf "lesion_shift_pixels" "64" `
     --conf "lesion_mask_logit_threshold" "1.0" `
-    --conf "lesion_flip_display_vertical" "false"
+    --conf "lesion_flip_display_vertical" "false" `
+    --conf "cxformer_device" "cpu" `
+    --conf "cxformer_num_threads" "2"
