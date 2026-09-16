@@ -314,6 +314,8 @@ class ChestAnalyzerWidget(ScriptedLoadableModuleWidget):
             return
 
         self.volumeSelector.setCurrentNode(volume_node)
+        self.logic.set_three_panel_layout(_CHEST_ANALYZER_LAYOUT_ID)
+        self.logic.clear_three_panel_views()
         server_url = self.serverUrlEdit.text
         errors = []
         gradcam_node = None
@@ -324,6 +326,18 @@ class ChestAnalyzerWidget(ScriptedLoadableModuleWidget):
         anatomy_result = None
         lesion_result = None
         cxformer_result = None
+
+        def refresh_panels():
+            self.logic.assign_panels(
+                source_node=volume_node,
+                gradcam_node=gradcam_node,
+                anatomy_node=anatomy_node,
+                lesion_node=lesion_node,
+                use_source_fallback=False,
+            )
+            slicer.app.processEvents()
+
+        slicer.app.processEvents()
 
         # ── Classification ───────────────────────────────────────────
         try:
@@ -354,6 +368,7 @@ class ChestAnalyzerWidget(ScriptedLoadableModuleWidget):
             # GradCAM node was loaded by logic.classify()
             gradcam_node = self.logic.get_gradcam_node()
             anatomy_bbox = classify_result.get("bbox")
+            refresh_panels()
 
         except Exception as error:
             errors.append(f"Classification failed: {error}")
@@ -379,6 +394,7 @@ class ChestAnalyzerWidget(ScriptedLoadableModuleWidget):
                 reference_volume=volume_node,
                 bbox=anatomy_bbox,
             )
+            refresh_panels()
 
             conf = anatomy_result.get("confidence", {})
             ctr = anatomy_result.get("ctr")
@@ -421,6 +437,7 @@ class ChestAnalyzerWidget(ScriptedLoadableModuleWidget):
                 lesion_result=lesion_result,
                 reference_volume=volume_node,
             )
+            refresh_panels()
             findings = lesion_result.get("findings", [])
             top = findings[0] if findings else None
             self.lesionStatusLabel.setText("Status: Done")
@@ -490,14 +507,7 @@ class ChestAnalyzerWidget(ScriptedLoadableModuleWidget):
             errors.append(f"Report export failed: {error}")
             self.reportPathLabel.setText("Report JSON: ERROR")
 
-        # ── Switch to 3-panel layout and assign views ─────────────────
-        self.logic.set_three_panel_layout(_CHEST_ANALYZER_LAYOUT_ID)
-        self.logic.assign_panels(
-            source_node=volume_node,
-            gradcam_node=gradcam_node,
-            anatomy_node=anatomy_node,
-            lesion_node=lesion_node,
-        )
+        refresh_panels()
 
         if errors:
             slicer.util.warningDisplay("\n".join(errors))
@@ -1371,7 +1381,14 @@ class ChestAnalyzerLogic(ScriptedLoadableModuleLogic):
         )
 
     @staticmethod
-    def assign_panels(*, source_node, gradcam_node=None, anatomy_node=None, lesion_node=None):
+    def assign_panels(
+        *,
+        source_node,
+        gradcam_node=None,
+        anatomy_node=None,
+        lesion_node=None,
+        use_source_fallback=True,
+    ):
         """
         Red   -> GradCAM overlay, or source fallback
         Green → original X-ray background + anatomy segmentation overlay
@@ -1388,7 +1405,11 @@ class ChestAnalyzerLogic(ScriptedLoadableModuleLogic):
         )
 
         # Red: GradCAM overlay (falls back to source)
-        red_bg = gradcam_node if gradcam_node is not None else source_node
+        red_bg = (
+            gradcam_node
+            if gradcam_node is not None
+            else source_node if use_source_fallback else None
+        )
         red_widget = layout_manager.sliceWidget("Red")
         if red_widget:
             ChestAnalyzerLogic.debug_log(
@@ -1400,7 +1421,11 @@ class ChestAnalyzerLogic(ScriptedLoadableModuleLogic):
         # Green: rendered anatomy overlay (falls back to source)
         green_widget = layout_manager.sliceWidget("Green")
         if green_widget:
-            green_bg = anatomy_node if anatomy_node is not None else source_node
+            green_bg = (
+                anatomy_node
+                if anatomy_node is not None
+                else source_node if use_source_fallback else None
+            )
             ChestAnalyzerLogic.debug_log(
                 "assign green panel background",
                 background=green_bg.GetName() if green_bg else None,
@@ -1410,7 +1435,11 @@ class ChestAnalyzerLogic(ScriptedLoadableModuleLogic):
         # Yellow: paper-style MedicalPatchNet lesion display
         yellow_widget = layout_manager.sliceWidget("Yellow")
         if yellow_widget:
-            yellow_bg = lesion_node if lesion_node is not None else source_node
+            yellow_bg = (
+                lesion_node
+                if lesion_node is not None
+                else source_node if use_source_fallback else None
+            )
             ChestAnalyzerLogic.debug_log(
                 "assign yellow panel",
                 background=yellow_bg.GetName() if yellow_bg else None,
@@ -1424,9 +1453,29 @@ class ChestAnalyzerLogic(ScriptedLoadableModuleLogic):
         ChestAnalyzerLogic.debug_log("assign panels done")
 
     @staticmethod
+    def clear_three_panel_views():
+        layout_manager = slicer.app.layoutManager()
+        for view_name in ("Red", "Green", "Yellow"):
+            slice_widget = layout_manager.sliceWidget(view_name)
+            if not slice_widget:
+                continue
+            slice_widget.mrmlSliceNode().SetOrientationToAxial()
+            composite = slice_widget.mrmlSliceCompositeNode()
+            if hasattr(composite, "SetLinkedControl"):
+                composite.SetLinkedControl(False)
+            composite.SetBackgroundVolumeID("")
+            composite.SetForegroundVolumeID("")
+            composite.SetLabelVolumeID("")
+            slice_widget.sliceLogic().FitSliceToAll()
+            ChestAnalyzerLogic.debug_log("clear panel", view=view_name)
+        slicer.app.processEvents()
+
+    @staticmethod
     def assign_background_to_slice(slice_widget, background_node):
         slice_widget.mrmlSliceNode().SetOrientationToAxial()
         composite = slice_widget.mrmlSliceCompositeNode()
+        if hasattr(composite, "SetLinkedControl"):
+            composite.SetLinkedControl(False)
         composite.SetBackgroundVolumeID(background_node.GetID() if background_node else "")
         composite.SetForegroundVolumeID("")
         composite.SetLabelVolumeID("")
