@@ -72,6 +72,67 @@ class CXformerClassifier(nn.Module):
         return logits
 
 
+class OfflineCXformerImageProcessor:
+    """Local fallback for the CXFormer custom image processor.
+
+    The hosted processor applies RGB conversion, per-channel histogram
+    equalization, resize to shortest edge, center crop, rescale, and ImageNet
+    normalization. Keeping this small fallback avoids a hard runtime dependency
+    on HuggingFace network access inside the MONAI Label server.
+    """
+
+    def __init__(self, image_size: int, mean, std):
+        self.image_size = int(image_size)
+        self.mean = np.asarray(mean, dtype=np.float32).reshape(1, 1, 3)
+        self.std = np.asarray(std, dtype=np.float32).reshape(1, 1, 3)
+
+    def __call__(self, images, return_tensors: str = "pt"):
+        if return_tensors != "pt":
+            raise ValueError("OfflineCXformerImageProcessor only supports return_tensors='pt'")
+
+        image_list = images if isinstance(images, list) else [images]
+        tensors = [self._preprocess_one(image) for image in image_list]
+        return {"pixel_values": torch.stack(tensors, dim=0)}
+
+    def _preprocess_one(self, image) -> torch.Tensor:
+        if isinstance(image, Image.Image):
+            pil_image = image.convert("RGB")
+        else:
+            pil_image = Image.fromarray(image).convert("RGB")
+        pil_image = self._equalize_histogram(pil_image)
+        pil_image = self._resize_shortest_edge(pil_image)
+        pil_image = self._center_crop(pil_image)
+
+        array = np.asarray(pil_image, dtype=np.float32) / 255.0
+        array = (array - self.mean) / self.std
+        array = np.transpose(array, (2, 0, 1))
+        return torch.from_numpy(array).float()
+
+    @staticmethod
+    def _equalize_histogram(image: Image.Image) -> Image.Image:
+        image_array = np.asarray(image)
+        channels = cv2.split(image_array)
+        equalized = cv2.merge([cv2.equalizeHist(channel) for channel in channels])
+        return Image.fromarray(equalized)
+
+    def _resize_shortest_edge(self, image: Image.Image) -> Image.Image:
+        width, height = image.size
+        shortest = min(width, height)
+        if shortest == self.image_size:
+            return image
+
+        scale = float(self.image_size) / float(shortest)
+        new_width = max(self.image_size, int(round(width * scale)))
+        new_height = max(self.image_size, int(round(height * scale)))
+        return image.resize((new_width, new_height), resample=Image.Resampling.BICUBIC)
+
+    def _center_crop(self, image: Image.Image) -> Image.Image:
+        width, height = image.size
+        left = max(0, (width - self.image_size) // 2)
+        top = max(0, (height - self.image_size) // 2)
+        return image.crop((left, top, left + self.image_size, top + self.image_size))
+
+
 @dataclass
 class CXformerPathologyResult:
     source: str
@@ -287,9 +348,9 @@ class CXformerPathologyService:
             self.config.device or ("cuda" if torch.cuda.is_available() else "cpu")
         )
         model = model.to(device).eval()
-        processor = AutoImageProcessor.from_pretrained(
-            model_name,
-            trust_remote_code=True,
+        processor = self._load_processor(
+            model_name=model_name,
+            checkpoint=checkpoint,
         )
 
         self._model = model
@@ -299,6 +360,24 @@ class CXformerPathologyService:
         self._thresholds = {label: float(thresholds[label]) for label in labels}
         self._model_name = model_name
         return model, processor, device
+
+    @staticmethod
+    def _load_processor(model_name: str, checkpoint: Dict):
+        try:
+            return AutoImageProcessor.from_pretrained(
+                model_name,
+                trust_remote_code=True,
+                local_files_only=True,
+            )
+        except Exception:
+            image_size = int(checkpoint.get("image_size", 518))
+            mean = checkpoint.get("processor_mean", [0.485, 0.456, 0.406])
+            std = checkpoint.get("processor_std", [0.229, 0.224, 0.225])
+            return OfflineCXformerImageProcessor(
+                image_size=image_size,
+                mean=mean,
+                std=std,
+            )
 
     @staticmethod
     def _class_specific_patch_attribution(

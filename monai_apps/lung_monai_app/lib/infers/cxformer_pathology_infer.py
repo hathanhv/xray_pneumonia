@@ -1,4 +1,5 @@
 import sys
+import logging
 from pathlib import Path
 from typing import Any, Dict, Tuple, Union
 
@@ -8,6 +9,9 @@ if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
 from src.cxformer import CXformerPathologyConfig, CXformerPathologyService  # noqa: E402
+
+
+logger = logging.getLogger(__name__)
 
 
 class CXformerPathologyInfer:
@@ -92,11 +96,19 @@ class CXformerPathologyInfer:
             name="anatomy mask",
             required=False,
         ) if include_localization else None
-        result = self.service.predict_path(
-            image_path=image_path,
-            anatomy_mask_path=anatomy_path,
-            include_localization=include_localization,
-        )
+        try:
+            result = self.service.predict_path(
+                image_path=image_path,
+                anatomy_mask_path=anatomy_path,
+                include_localization=include_localization,
+            )
+        except Exception:
+            logger.exception(
+                "CXFormer inference failed | image=%s | include_localization=%s",
+                image_path,
+                include_localization,
+            )
+            raise
         return None, result.to_dict()
 
 
