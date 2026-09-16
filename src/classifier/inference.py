@@ -29,7 +29,7 @@ class ClassifierInferenceConfig:
     pad_right: int = 90
     pad_top: int = 60
     pad_bottom: int = 8
-    max_bottom_ratio: float = 0.75
+    max_bottom_ratio: float = 1.0
 
     def validate(self) -> None:
         if not self.checkpoint_path.exists():
