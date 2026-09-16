@@ -585,7 +585,7 @@ class ChestAnalyzerLogic(ScriptedLoadableModuleLogic):
         except Exception:
             pass
 
-    # ── Classification (unchanged from PneumoniaPredictor) ───────────────
+    # ── Classification ───────────────────────────────────────────────────
 
     def classify(self, volume_node, server_url, mask_node=None):
         temp_dir = tempfile.gettempdir()
@@ -1498,8 +1498,6 @@ class ChestAnalyzerLogic(ScriptedLoadableModuleLogic):
                 if (
                     node.GetName() == "GradCAM_Overlay"
                     or node.GetAttribute("ChestAnalyzer.IsGradCAM") == "1"
-                    # backward compat with old attribute name
-                    or node.GetAttribute("PneumoniaPredictor.IsGradCAM") == "1"
                 ):
                     slicer.mrmlScene.RemoveNode(node)
 
@@ -1643,7 +1641,7 @@ class ChestAnalyzerLogic(ScriptedLoadableModuleLogic):
                 traceback=traceback.format_exc(),
             )
 
-    # ── GradCAM overlay loader (same as PneumoniaPredictor) ──────────────
+    # ── GradCAM overlay loader ───────────────────────────────────────────
 
     @staticmethod
     def load_overlay_as_volume(
@@ -1802,7 +1800,6 @@ class ChestAnalyzerLogic(ScriptedLoadableModuleLogic):
             volume_node.GetName() in ("GradCAM_Overlay", "AnatomyOverlay", "LesionOverlay")
             or volume_node.GetAttribute("ChestAnalyzer.IsGradCAM") == "1"
             or volume_node.GetAttribute("ChestAnalyzer.IsLesion") == "1"
-            or volume_node.GetAttribute("PneumoniaPredictor.IsGradCAM") == "1"
             or volume_node.GetHideFromEditors()
         ):
             return False

@@ -98,9 +98,9 @@ directory.
 
 ### 3D Slicer
 
-`PneumoniaPredictor.py` is a Slicer scripted module. It opens MONAI Label for
-mask refinement and calls the MONAI classifier endpoint for probabilities and
-Grad-CAM.
+`ChestAnalyzer.py` is the active Slicer scripted module. It opens MONAI Label
+for mask refinement, calls the MONAI classifier endpoint for probabilities and
+Grad-CAM, and runs the anatomy, lesion, and CXFormer analysis views.
 
 ### Compatibility API
 

@@ -236,20 +236,18 @@ Pipeline này mở rộng workflow MONAI Label hiện tại:
     ├── Segment Editor (human correction anatomy mask)
     ├── Submit Label → labels/final/  [human_corrected = true]
     │
-    └── Pneumonia Predictor Module
+    └── Chest Analyzer Module
             ├── Mode 1: Load MONAI Label segmentation
-            ├── Mode 2: MobileNetV2 classify + GradCAM   ← hiện tại
-            │
-            └── [MỚI] Mode 3: Full Pipeline
+            └── Mode 2: ChestAnalyze
+                    ├── MobileNetV2 classify + GradCAM
                     ├── Run anatomy segmentation (ianpan)
-                    ├── Run MedicalPatchNet (14 findings)
-                    ├── Spatial Fusion
+                    ├── Run MedicalPatchNet / CXFormer findings
                     ├── Quantification + CTR
                     └── Export JSON report
 ```
 
 **File cần mở rộng:**
-- `pneumonia_slicer_app/slicer_module/PneumoniaPredictor/PneumoniaPredictor.py`
+- `pneumonia_slicer_app/slicer_module/ChestAnalyzer/ChestAnalyzer.py`
 - `monai_apps/lung_monai_app/lib/configs/` — thêm anatomy config
 - `src/` — thêm các module mới (anatomy, lesion, fusion, quantification)
 
@@ -383,7 +381,7 @@ Pipeline này mở rộng workflow MONAI Label hiện tại:
 
 ### Phase 5 — Slicer Integration
 - [ ] Thêm anatomy model vào `monai_apps/lung_monai_app`
-- [ ] Thêm Mode 3 vào `PneumoniaPredictor.py`
+- [ ] Hoàn thiện `ChestAnalyzer.py`
 - [ ] Export JSON từ Slicer UI
 
 ### Phase 6 — Local LLM Report (tương lai)

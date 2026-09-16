@@ -129,7 +129,7 @@ Keep:
 - `tests/unit/`, `tests/integration/`, `tests/parity/`, and `tests/fixtures/`
 - `monai_apps/lung_monai_app/`
 - `pneumonia_slicer_app/backend/app.py`
-- `pneumonia_slicer_app/slicer_module/PneumoniaPredictor/`
+- `pneumonia_slicer_app/slicer_module/ChestAnalyzer/`
 - `environment/requirements-monai-app.txt`
 - `environment/task0_runtime_constraints.txt` until it is renamed.
 
