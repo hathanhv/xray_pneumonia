@@ -53,17 +53,35 @@ class CXformerClassifier(nn.Module):
 
     @staticmethod
     def _load_backbone(model_name: str):
+        # Workaround: transformers >=5.x post_init() sets
+        # ``all_tied_weights_keys`` which torch 2.12 Module.__setattr__
+        # rejects with ``AttributeError: can't set attribute``.
+        # Temporarily patch post_init to swallow the error during loading.
+        from transformers.modeling_utils import PreTrainedModel
+
+        _original_post_init = PreTrainedModel.post_init
+
+        def _safe_post_init(self):
+            try:
+                _original_post_init(self)
+            except AttributeError:
+                pass
+
+        PreTrainedModel.post_init = _safe_post_init
         try:
-            return AutoModel.from_pretrained(
-                model_name,
-                trust_remote_code=True,
-                local_files_only=True,
-            )
-        except Exception:
-            return AutoModel.from_pretrained(
-                model_name,
-                trust_remote_code=True,
-            )
+            try:
+                return AutoModel.from_pretrained(
+                    model_name,
+                    trust_remote_code=True,
+                    local_files_only=True,
+                )
+            except Exception:
+                return AutoModel.from_pretrained(
+                    model_name,
+                    trust_remote_code=True,
+                )
+        finally:
+            PreTrainedModel.post_init = _original_post_init
 
     def pooled_features(self, last_hidden_state: torch.Tensor) -> torch.Tensor:
         cls_feature = last_hidden_state[:, 0]
