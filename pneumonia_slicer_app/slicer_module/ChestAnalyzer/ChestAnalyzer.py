@@ -1553,9 +1553,12 @@ class ChestAnalyzerLogic(ScriptedLoadableModuleLogic):
     ):
         from PIL import Image
 
+        import numpy as np
+
         output_dir = ChestAnalyzerLogic.debug_output_dir()
         png_path = os.path.join(output_dir, f"{name}_native_loader_input.png")
-        Image.fromarray(overlay).save(png_path)
+        overlay_for_slicer = np.flipud(np.fliplr(np.asarray(overlay, dtype=np.uint8)))
+        Image.fromarray(overlay_for_slicer).save(png_path)
 
         properties = {
             "name": name,
@@ -1588,7 +1591,7 @@ class ChestAnalyzerLogic(ScriptedLoadableModuleLogic):
             shape=overlay.shape,
             attribute=attribute_name,
             png_path=png_path,
-            orientation_strategy="slicer_native_png_loader_identity_matrix",
+            orientation_strategy="slicer_native_png_loader_pre_rotate_180",
         )
         return overlay_node
 
