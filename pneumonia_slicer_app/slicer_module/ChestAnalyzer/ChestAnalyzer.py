@@ -1214,10 +1214,10 @@ class ChestAnalyzerLogic(ScriptedLoadableModuleLogic):
         from vtk.util import numpy_support
 
         overlay_rgb = np.asarray(overlay_rgb, dtype=np.uint8)
-        # The overlay from the server is natural order (row 0 = top).
-        # The IJK-to-RAS matrix copied from reference_volume has negative Y, so
-        # Slicer flips Y on display.  Pre-flip so the result displays right-side up.
-        overlay_rgb = np.flipud(overlay_rgb)
+        # The overlay is natural image order. Slicer displays the copied
+        # reference geometry with X/Y axis flips, so pre-flip both axes to keep
+        # left/right markers and anatomy aligned in the slice view.
+        overlay_rgb = np.flipud(np.fliplr(overlay_rgb))
         h, w = overlay_rgb.shape[:2]
 
         # Build VTK image data: VTK expects (x, y, z) = (w, h, 1) in Fortran order
