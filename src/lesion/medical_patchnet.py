@@ -99,7 +99,7 @@ class MedicalPatchNetConfig:
     mask_logit_threshold: float = 1.0
     top_k: int = 5
     include_overlay: bool = True
-    flip_display_vertical: bool = False
+    flip_display_vertical: bool = True
 
 
 @dataclass(frozen=True)

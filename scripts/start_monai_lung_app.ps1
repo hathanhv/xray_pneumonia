@@ -11,7 +11,7 @@ Set-Location -LiteralPath $ProjectRoot
 
 & $PythonExe -m monailabel.main start_server `
     --app "monai_apps\lung_monai_app" `
-    --studies "data\test" `
+    --studies "data\qc\fail_qc\images" `
     --conf "models" "all" `
     --conf "anatomy_device" "cpu" `
     --conf "anatomy_num_threads" "2" `
@@ -19,4 +19,4 @@ Set-Location -LiteralPath $ProjectRoot
     --conf "lesion_num_threads" "2" `
     --conf "lesion_shift_pixels" "64" `
     --conf "lesion_mask_logit_threshold" "1.0" `
-    --conf "lesion_flip_display_vertical" "false"
+    --conf "lesion_flip_display_vertical" "true"
