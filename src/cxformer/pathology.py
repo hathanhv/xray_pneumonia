@@ -46,13 +46,24 @@ class CXformerClassifier(nn.Module):
         num_register_tokens: int = 4,
     ):
         super().__init__()
-        self.backbone = AutoModel.from_pretrained(
-            model_name,
-            trust_remote_code=True,
-        )
+        self.backbone = self._load_backbone(model_name)
         hidden_size = int(self.backbone.config.hidden_size)
         self.classifier = nn.Linear(hidden_size, int(num_labels))
         self.num_register_tokens = int(num_register_tokens)
+
+    @staticmethod
+    def _load_backbone(model_name: str):
+        try:
+            return AutoModel.from_pretrained(
+                model_name,
+                trust_remote_code=True,
+                local_files_only=True,
+            )
+        except Exception:
+            return AutoModel.from_pretrained(
+                model_name,
+                trust_remote_code=True,
+            )
 
     def pooled_features(self, last_hidden_state: torch.Tensor) -> torch.Tensor:
         cls_feature = last_hidden_state[:, 0]
