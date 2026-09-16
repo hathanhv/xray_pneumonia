@@ -25,7 +25,7 @@ class LesionLocalizationInfer:
         mask_logit_threshold=5.0,
         top_k=5,
         include_overlay=True,
-        flip_display_vertical=True,
+        flip_display_vertical=False,
     ):
         try:
             from monailabel.interfaces.tasks.infer_v2 import InferTask, InferType
