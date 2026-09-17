@@ -15,8 +15,11 @@ import base64
 import html
 import json
 import os
+import sys
 import tempfile
 import traceback
+from datetime import datetime, timezone
+from pathlib import Path
 
 import qt
 import requests
@@ -26,6 +29,14 @@ from slicer.ScriptedLoadableModule import (
     ScriptedLoadableModuleLogic,
     ScriptedLoadableModuleWidget,
 )
+
+PROJECT_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "..", ".."))
+if PROJECT_ROOT not in sys.path:
+    sys.path.insert(0, PROJECT_ROOT)
+
+from src.reporting.clinical_schema import build_clinical_report
+from src.reporting.report_storage import save_report_bundle, save_report_revision, sha256_file
+from src.reporting.report_render import export_report_pdf
 
 # ---------------------------------------------------------------------------
 # Module descriptor
@@ -244,6 +255,55 @@ class ChestAnalyzerWidget(ScriptedLoadableModuleWidget):
         self.reportPathLabel = qt.QLabel("Report JSON: -")
         self.layout.addWidget(self.reportPathLabel)
 
+        # -- Physician report review ------------------------------------
+        reportHeader = qt.QLabel("Pneumonia Report Draft — Physician Review")
+        self.layout.addWidget(reportHeader)
+
+        self.reportFindingsEdit = qt.QTextEdit()
+        self.reportFindingsEdit.placeholderText = "Findings"
+        self.reportFindingsEdit.minimumHeight = 90
+        self.layout.addWidget(qt.QLabel("Findings"))
+        self.layout.addWidget(self.reportFindingsEdit)
+
+        self.reportImpressionEdit = qt.QTextEdit()
+        self.reportImpressionEdit.placeholderText = "Impression"
+        self.reportImpressionEdit.minimumHeight = 70
+        self.layout.addWidget(qt.QLabel("Impression"))
+        self.layout.addWidget(self.reportImpressionEdit)
+
+        self.reportRecommendationEdit = qt.QTextEdit()
+        self.reportRecommendationEdit.placeholderText = "Recommendation"
+        self.reportRecommendationEdit.minimumHeight = 55
+        self.layout.addWidget(qt.QLabel("Recommendation"))
+        self.layout.addWidget(self.reportRecommendationEdit)
+
+        self.reportLimitationsEdit = qt.QTextEdit()
+        self.reportLimitationsEdit.placeholderText = "Limitations"
+        self.reportLimitationsEdit.minimumHeight = 55
+        self.layout.addWidget(qt.QLabel("Limitations"))
+        self.layout.addWidget(self.reportLimitationsEdit)
+
+        reportActions = qt.QHBoxLayout()
+        self.generateReportButton = qt.QPushButton("Load Draft")
+        self.generateReportButton.clicked.connect(self.onLoadReportDraft)
+        self.saveDraftButton = qt.QPushButton("Save Draft")
+        self.saveDraftButton.clicked.connect(self.onSaveReportDraft)
+        self.resetDraftButton = qt.QPushButton("Reset Draft")
+        self.resetDraftButton.clicked.connect(self.onLoadReportDraft)
+        self.approveReportButton = qt.QPushButton("Approve Report")
+        self.approveReportButton.clicked.connect(self.onApproveReport)
+        for button in (
+            self.generateReportButton,
+            self.saveDraftButton,
+            self.resetDraftButton,
+            self.approveReportButton,
+        ):
+            reportActions.addWidget(button)
+        self.layout.addLayout(reportActions)
+        self.reportReviewStatusLabel = qt.QLabel("Review status: —")
+        self.layout.addWidget(self.reportReviewStatusLabel)
+        self._set_report_editor_enabled(False)
+
         self.layout.addStretch(1)
 
         # Pre-select the current Red-view volume
@@ -258,6 +318,151 @@ class ChestAnalyzerWidget(ScriptedLoadableModuleWidget):
         if getattr(self, "nodeAddedObserver", None):
             slicer.mrmlScene.RemoveObserver(self.nodeAddedObserver)
             self.nodeAddedObserver = None
+
+    def _set_report_editor_enabled(self, enabled):
+        for editor in (
+            self.reportFindingsEdit,
+            self.reportImpressionEdit,
+            self.reportRecommendationEdit,
+            self.reportLimitationsEdit,
+        ):
+            editor.setEnabled(enabled)
+        self.saveDraftButton.setEnabled(enabled)
+        self.resetDraftButton.setEnabled(enabled)
+        self.approveReportButton.setEnabled(enabled)
+
+    @staticmethod
+    def _report_now():
+        return datetime.now(timezone.utc).isoformat()
+
+    def _report_file(self):
+        path = self.reportPathLabel.text
+        prefix = "Report JSON: "
+        if not path.startswith(prefix):
+            return None
+        path = path[len(prefix):].strip()
+        return path if path and os.path.isfile(path) else None
+
+    def _read_report_file(self):
+        path = self._report_file()
+        if not path:
+            raise RuntimeError("Run ChestAnalyze before reviewing a report.")
+        with open(path, "r", encoding="utf-8") as report_file:
+            return path, json.load(report_file)
+
+    def _write_report_file(self, path, report):
+        temporary_path = path + ".tmp"
+        with open(temporary_path, "w", encoding="utf-8") as report_file:
+            json.dump(report, report_file, indent=2, ensure_ascii=False)
+        os.replace(temporary_path, path)
+
+    def _set_report_editor_values(self, draft):
+        self.reportFindingsEdit.setPlainText(draft.get("findings_text", ""))
+        self.reportImpressionEdit.setPlainText(draft.get("impression_text", ""))
+        self.reportRecommendationEdit.setPlainText(
+            draft.get("recommendation_text", "")
+        )
+        self.reportLimitationsEdit.setPlainText(draft.get("limitations_text", ""))
+
+    def onLoadReportDraft(self):
+        try:
+            _path, report = self._read_report_file()
+            self._set_report_editor_values(report.get("report_draft", {}))
+            status = report.get("physician_review", {}).get("status", "draft")
+            self.reportReviewStatusLabel.setText(f"Review status: {status}")
+            self._set_report_editor_enabled(status != "approved")
+        except Exception as error:
+            slicer.util.warningDisplay(str(error))
+
+    def _draft_from_editor(self):
+        return {
+            "findings_text": self.reportFindingsEdit.toPlainText(),
+            "impression_text": self.reportImpressionEdit.toPlainText(),
+            "recommendation_text": self.reportRecommendationEdit.toPlainText(),
+            "limitations_text": self.reportLimitationsEdit.toPlainText(),
+        }
+
+    def onSaveReportDraft(self):
+        try:
+            path, report = self._read_report_file()
+            old_draft = dict(report.get("report_draft", {}))
+            new_draft = self._draft_from_editor()
+            edits = report.setdefault("physician_review", {}).setdefault("edits", [])
+            now = self._report_now()
+            for field, new_value in new_draft.items():
+                old_value = old_draft.get(field, "")
+                if old_value != new_value:
+                    edits.append(
+                        {
+                            "path": f"report_draft.{field}",
+                            "old_value": old_value,
+                            "new_value": new_value,
+                            "edited_by": "slicer_user",
+                            "edited_at": now,
+                            "reason": "Physician review",
+                        }
+                    )
+            report["report_draft"].update(new_draft)
+            review = report.setdefault("physician_review", {})
+            review["status"] = "in_review"
+            review["reviewed_at"] = now
+            save_report_revision(
+                report,
+                report_path=path,
+                report_status="in_review",
+            )
+            self.reportReviewStatusLabel.setText("Review status: in_review")
+            slicer.util.infoDisplay("Report draft saved.")
+        except Exception as error:
+            slicer.util.errorDisplay(f"Could not save report draft: {error}")
+
+    def onApproveReport(self):
+        try:
+            path, report = self._read_report_file()
+            self.onSaveReportDraft()
+            _path, report = self._read_report_file()
+            now = self._report_now()
+            draft = report.get("report_draft", {})
+            final_report = report.setdefault("final_report", {})
+            for field in (
+                "findings_text",
+                "impression_text",
+                "recommendation_text",
+                "limitations_text",
+            ):
+                final_report[field] = draft.get(field, "")
+            final_report.update(
+                {
+                    "approved": True,
+                    "approved_by": "slicer_user",
+                    "approved_at": now,
+                }
+            )
+            review = report.setdefault("physician_review", {})
+            review["status"] = "approved"
+            review["reviewed_at"] = now
+            report.setdefault("provenance", {})["human_reviewed"] = True
+            save_report_revision(
+                report,
+                report_path=path,
+                report_status="approved",
+            )
+            approved_report = json.loads(
+                Path(path).read_text(encoding="utf-8")
+            )
+            pdf_path = os.path.join(os.path.dirname(path), "final_report.pdf")
+            export_report_pdf(approved_report, pdf_path)
+            self.reportReviewStatusLabel.setText("Review status: approved")
+            self._set_report_editor_enabled(False)
+            slicer.util.infoDisplay(
+                "Report approved and PDF exported:\n" + pdf_path
+            )
+        except Exception as error:
+            slicer.util.errorDisplay(
+                "Report approval/PDF export failed: "
+                + str(error)
+                + "\nYou can approve through the backend API if Slicer lacks WeasyPrint."
+            )
 
     # ── Callbacks ────────────────────────────────────────────────────────
 
@@ -354,6 +559,15 @@ class ChestAnalyzerWidget(ScriptedLoadableModuleWidget):
             "<p>Run ChestAnalyze to display 14-label CXFormer probabilities and thresholds.</p>"
         )
         self.reportPathLabel.setText("Report JSON: -")
+        for editor in (
+            self.reportFindingsEdit,
+            self.reportImpressionEdit,
+            self.reportRecommendationEdit,
+            self.reportLimitationsEdit,
+        ):
+            editor.clear()
+        self.reportReviewStatusLabel.setText("Review status: —")
+        self._set_report_editor_enabled(False)
 
     def normalizeLoadedXrays(self):
         for node_class in (
@@ -557,6 +771,7 @@ class ChestAnalyzerWidget(ScriptedLoadableModuleWidget):
                 cxformer_result=cxformer_result,
             )
             self.reportPathLabel.setText("Report JSON: " + report_path)
+            self.onLoadReportDraft()
         except Exception as error:
             errors.append(f"Report export failed: {error}")
             self.reportPathLabel.setText("Report JSON: ERROR")
@@ -958,9 +1173,7 @@ class ChestAnalyzerLogic(ScriptedLoadableModuleLogic):
         lesion_result=None,
         cxformer_result=None,
     ):
-        temp_dir = tempfile.gettempdir()
         source_name = volume_node.GetName() if volume_node else "unknown"
-        report_path = os.path.join(temp_dir, "chest_analyze_report.json")
         report = {
             "schema_version": "1.1-draft",
             "study": {
@@ -1022,10 +1235,19 @@ class ChestAnalyzerLogic(ScriptedLoadableModuleLogic):
                 "cxformer_elapsed_s": (cxformer_result or {}).get("elapsed_s"),
             },
         }
-        with open(report_path, "w", encoding="utf-8") as report_file:
-            json.dump(report, report_file, indent=2, ensure_ascii=False)
+        report = build_clinical_report(report)
+        image_hash = None
+        if volume_node is not None and volume_node.GetStorageNode() is not None:
+            image_path = volume_node.GetStorageNode().GetFileName()
+            image_hash = sha256_file(image_path)
+        report_path = save_report_bundle(
+            report,
+            output_root=os.path.join(PROJECT_ROOT, "outputs", "reports"),
+            study_id=source_name,
+            image_hash=image_hash,
+        )
         self.debug_log("report exported", report_path=report_path)
-        return report_path
+        return str(report_path)
 
     @staticmethod
     def _report_anatomy(anatomy_result):

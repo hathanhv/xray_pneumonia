@@ -190,9 +190,25 @@ class AnatomySegmentationInfer:
         self._configure_torch_threads(torch)
 
         logger.info("[anatomy_infer] Loading model %s …", self.MODEL_ID)
-        model = AutoModel.from_pretrained(
-            self.MODEL_ID, trust_remote_code=True
-        )
+        try:
+            # The model is intentionally fetched from Hugging Face on first use;
+            # this task does not require a project-owned anatomy checkpoint.
+            model = AutoModel.from_pretrained(
+                self.MODEL_ID,
+                trust_remote_code=True,
+            )
+        except Exception as error:
+            self._debug_log(
+                "model load failed",
+                model_id=self.MODEL_ID,
+                error=f"{type(error).__name__}: {error}",
+            )
+            raise RuntimeError(
+                "Could not load anatomy model from Hugging Face "
+                f"({self.MODEL_ID}). Check internet access and use "
+                "transformers>=4.40,<5.0 and albumentations. "
+                f"Original error: {type(error).__name__}: {error}"
+            ) from error
         device = self._resolve_device()
         model = model.eval().to(device)
         self._model = (model, device)

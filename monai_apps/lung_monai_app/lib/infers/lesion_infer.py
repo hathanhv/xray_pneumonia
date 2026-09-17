@@ -17,6 +17,8 @@ class LesionLocalizationInfer:
         self,
         studies=None,
         checkpoint_path=None,
+        hf_repo_id="patrick-w/MedicalPatchNet",
+        hf_filename="MedicalPatchNet_weights.pt",
         device=None,
         num_threads=2,
         shift_pixels=64,
@@ -39,6 +41,8 @@ class LesionLocalizationInfer:
         self.service = MedicalPatchNetService(
             MedicalPatchNetConfig(
                 checkpoint_path=checkpoint,
+                hf_repo_id=str(hf_repo_id),
+                hf_filename=str(hf_filename),
                 device=device,
                 num_threads=int(num_threads),
                 shift_pixels=int(shift_pixels),

@@ -2,12 +2,15 @@
 
 Pillow>=10.0
 SimpleITK>=2.3
+albumentations>=1.4,<2.0
 fastapi>=0.115
 matplotlib>=3.8
 monailabel==0.8.5
 python-multipart>=0.0.9
 requests>=2.31
 timm>=0.9
-transformers>=4.40
+# ianpan/chest-x-ray-basic uses remote model code written for the 4.x API.
+# Transformers 5.x breaks its tied-weights handling during model construction.
+transformers>=4.40,<5.0
 huggingface_hub>=0.24
 uvicorn>=0.30

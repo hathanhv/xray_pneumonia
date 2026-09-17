@@ -28,6 +28,12 @@ class LesionConfig:
         return create_lesion_localization_infer(
             studies=self.studies,
             checkpoint_path=checkpoint_path,
+            hf_repo_id=self.conf.get(
+                "lesion_hf_repo_id", "patrick-w/MedicalPatchNet"
+            ),
+            hf_filename=self.conf.get(
+                "lesion_hf_filename", "MedicalPatchNet_weights.pt"
+            ),
             device=self.conf.get("lesion_device", "cpu"),
             num_threads=self.conf.get("lesion_num_threads", 2),
             shift_pixels=self.conf.get("lesion_shift_pixels", 64),
