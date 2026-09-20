@@ -14,8 +14,11 @@ import base64
 import html
 import json
 import os
+import sys
 import tempfile
 import traceback
+from datetime import datetime, timezone
+from pathlib import Path
 
 import qt
 import requests
@@ -25,6 +28,14 @@ from slicer.ScriptedLoadableModule import (
     ScriptedLoadableModuleLogic,
     ScriptedLoadableModuleWidget,
 )
+
+PROJECT_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "..", ".."))
+if PROJECT_ROOT not in sys.path:
+    sys.path.insert(0, PROJECT_ROOT)
+
+from src.reporting.clinical_schema import build_clinical_report
+from src.reporting.report_render import export_report_html, export_report_pdf
+from src.reporting.report_storage import save_report_bundle, save_report_revision, sha256_file
 
 # ---------------------------------------------------------------------------
 # Module descriptor
@@ -242,6 +253,60 @@ class ChestAnalyzerWidget(ScriptedLoadableModuleWidget):
         self.layout.addWidget(self.cxformerTimingLabel)
         self.layout.addWidget(self.cxformerProbabilityTable)
 
+        # -- Physician report review ------------------------------------
+        sep5 = qt.QFrame()
+        sep5.setFrameShape(qt.QFrame.HLine)
+        self.layout.addWidget(sep5)
+
+        reportHeader = qt.QLabel("Clinical Report Draft")
+        reportHeader.setStyleSheet("font-size: 14px; font-weight: bold;")
+        self.layout.addWidget(reportHeader)
+
+        self.reportFindingsEdit = qt.QTextEdit()
+        self.reportFindingsEdit.placeholderText = "Findings"
+        self.reportFindingsEdit.minimumHeight = 90
+        self.layout.addWidget(qt.QLabel("Findings"))
+        self.layout.addWidget(self.reportFindingsEdit)
+
+        self.reportImpressionEdit = qt.QTextEdit()
+        self.reportImpressionEdit.placeholderText = "Impression"
+        self.reportImpressionEdit.minimumHeight = 70
+        self.layout.addWidget(qt.QLabel("Impression"))
+        self.layout.addWidget(self.reportImpressionEdit)
+
+        self.reportRecommendationEdit = qt.QTextEdit()
+        self.reportRecommendationEdit.placeholderText = "Recommendation"
+        self.reportRecommendationEdit.minimumHeight = 55
+        self.layout.addWidget(qt.QLabel("Recommendation"))
+        self.layout.addWidget(self.reportRecommendationEdit)
+
+        self.reportLimitationsEdit = qt.QTextEdit()
+        self.reportLimitationsEdit.placeholderText = "Limitations"
+        self.reportLimitationsEdit.minimumHeight = 55
+        self.layout.addWidget(qt.QLabel("Limitations"))
+        self.layout.addWidget(self.reportLimitationsEdit)
+
+        reportActions = qt.QHBoxLayout()
+        self.loadDraftButton = qt.QPushButton("Load Draft")
+        self.loadDraftButton.clicked.connect(self.onLoadReportDraft)
+        self.saveDraftButton = qt.QPushButton("Save Draft")
+        self.saveDraftButton.clicked.connect(self.onSaveReportDraft)
+        self.resetDraftButton = qt.QPushButton("Reset Draft")
+        self.resetDraftButton.clicked.connect(self.onLoadReportDraft)
+        self.approveReportButton = qt.QPushButton("Approve Report")
+        self.approveReportButton.clicked.connect(self.onApproveReport)
+        for button in (
+            self.loadDraftButton,
+            self.saveDraftButton,
+            self.resetDraftButton,
+            self.approveReportButton,
+        ):
+            reportActions.addWidget(button)
+        self.layout.addLayout(reportActions)
+        self.reportReviewStatusLabel = qt.QLabel("Review status: —")
+        self.layout.addWidget(self.reportReviewStatusLabel)
+        self._set_report_editor_enabled(False)
+
         self.layout.addStretch(1)
 
         # Pre-select the current Red-view volume
@@ -256,6 +321,148 @@ class ChestAnalyzerWidget(ScriptedLoadableModuleWidget):
         if getattr(self, "nodeAddedObserver", None):
             slicer.mrmlScene.RemoveObserver(self.nodeAddedObserver)
             self.nodeAddedObserver = None
+
+    def _set_report_editor_enabled(self, enabled):
+        for editor in (
+            self.reportFindingsEdit,
+            self.reportImpressionEdit,
+            self.reportRecommendationEdit,
+            self.reportLimitationsEdit,
+        ):
+            editor.setEnabled(enabled)
+        self.saveDraftButton.setEnabled(enabled)
+        self.resetDraftButton.setEnabled(enabled)
+        self.approveReportButton.setEnabled(enabled)
+
+    @staticmethod
+    def _report_now():
+        return datetime.now(timezone.utc).isoformat()
+
+    def _report_file(self):
+        path = self.reportPathLabel.text
+        prefix = "Report JSON: "
+        if not path.startswith(prefix):
+            return None
+        path = path[len(prefix):].strip()
+        return path if path and os.path.isfile(path) else None
+
+    def _read_report_file(self):
+        path = self._report_file()
+        if not path:
+            raise RuntimeError("Run ChestAnalyze before reviewing a report.")
+        with open(path, "r", encoding="utf-8") as report_file:
+            return path, json.load(report_file)
+
+    def _set_report_editor_values(self, draft):
+        self.reportFindingsEdit.setPlainText(draft.get("findings_text", ""))
+        self.reportImpressionEdit.setPlainText(draft.get("impression_text", ""))
+        self.reportRecommendationEdit.setPlainText(draft.get("recommendation_text", ""))
+        self.reportLimitationsEdit.setPlainText(draft.get("limitations_text", ""))
+
+    def onLoadReportDraft(self):
+        try:
+            _path, report = self._read_report_file()
+            self._set_report_editor_values(report.get("report_draft", {}))
+            status = report.get("physician_review", {}).get("status", "draft")
+            self.reportReviewStatusLabel.setText(f"Review status: {status}")
+            self._set_report_editor_enabled(status != "approved")
+        except Exception as error:
+            slicer.util.warningDisplay(str(error))
+
+    def _draft_from_editor(self):
+        return {
+            "findings_text": self.reportFindingsEdit.toPlainText(),
+            "impression_text": self.reportImpressionEdit.toPlainText(),
+            "recommendation_text": self.reportRecommendationEdit.toPlainText(),
+            "limitations_text": self.reportLimitationsEdit.toPlainText(),
+        }
+
+    def onSaveReportDraft(self):
+        try:
+            path, report = self._read_report_file()
+            old_draft = dict(report.get("report_draft", {}))
+            new_draft = self._draft_from_editor()
+            edits = report.setdefault("physician_review", {}).setdefault("edits", [])
+            now = self._report_now()
+            for field, new_value in new_draft.items():
+                old_value = old_draft.get(field, "")
+                if old_value != new_value:
+                    edits.append(
+                        {
+                            "path": f"report_draft.{field}",
+                            "old_value": old_value,
+                            "new_value": new_value,
+                            "edited_by": "slicer_user",
+                            "edited_at": now,
+                            "reason": "Physician review",
+                        }
+                    )
+            report.setdefault("report_draft", {}).update(new_draft)
+            review = report.setdefault("physician_review", {})
+            review["status"] = "in_review"
+            review["reviewed_at"] = now
+            save_report_revision(report, report_path=path, report_status="in_review")
+            self.reportReviewStatusLabel.setText("Review status: in_review")
+            slicer.util.infoDisplay("Report draft saved.")
+        except Exception as error:
+            slicer.util.errorDisplay(f"Could not save report draft: {error}")
+
+    def onApproveReport(self):
+        try:
+            path, report = self._read_report_file()
+            old_draft = dict(report.get("report_draft", {}))
+            new_draft = self._draft_from_editor()
+            if old_draft != new_draft:
+                self.onSaveReportDraft()
+                path, report = self._read_report_file()
+
+            now = self._report_now()
+            draft = report.get("report_draft", {})
+            final_report = report.setdefault("final_report", {})
+            for field in (
+                "findings_text",
+                "impression_text",
+                "recommendation_text",
+                "limitations_text",
+            ):
+                final_report[field] = draft.get(field, "")
+            final_report.update(
+                {
+                    "approved": True,
+                    "approved_by": "slicer_user",
+                    "approved_at": now,
+                }
+            )
+            review = report.setdefault("physician_review", {})
+            review["status"] = "approved"
+            review["reviewed_at"] = now
+            report.setdefault("provenance", {})["human_reviewed"] = True
+            save_report_revision(report, report_path=path, report_status="approved")
+            approved_report = json.loads(Path(path).read_text(encoding="utf-8"))
+            html_path = os.path.join(os.path.dirname(path), "final_report.html")
+            raw_image_path = os.path.join(os.path.dirname(path), "raw_image.png")
+            image_uri = "raw_image.png" if os.path.isfile(raw_image_path) else None
+            pdf_path = os.path.join(os.path.dirname(path), "final_report.pdf")
+            export_report_html(approved_report, html_path, image_uri=image_uri)
+            qt.QDesktopServices.openUrl(qt.QUrl.fromLocalFile(html_path))
+            self.reportReviewStatusLabel.setText("Review status: approved")
+            self._set_report_editor_enabled(False)
+            try:
+                export_report_pdf(approved_report, pdf_path, image_uri=image_uri)
+                message = (
+                    "Report approved.\n"
+                    "HTML: " + html_path + "\n"
+                    "PDF: " + pdf_path
+                )
+            except Exception as pdf_error:
+                message = (
+                    "Report approved.\n"
+                    "HTML: " + html_path + "\n"
+                    "PDF export skipped: " + str(pdf_error)
+                )
+            slicer.util.infoDisplay(message)
+        except Exception as error:
+            slicer.util.errorDisplay(f"Could not approve report: {error}")
 
     # ── Callbacks ────────────────────────────────────────────────────────
 
@@ -314,6 +521,8 @@ class ChestAnalyzerWidget(ScriptedLoadableModuleWidget):
             return
 
         self.volumeSelector.setCurrentNode(volume_node)
+        self.logic.set_three_panel_layout(_CHEST_ANALYZER_LAYOUT_ID)
+        self.logic.clear_three_panel_views()
         server_url = self.serverUrlEdit.text
         errors = []
         gradcam_node = None
@@ -324,6 +533,28 @@ class ChestAnalyzerWidget(ScriptedLoadableModuleWidget):
         anatomy_result = None
         lesion_result = None
         cxformer_result = None
+        self.reportPathLabel.setText("Report JSON: -")
+        for editor in (
+            self.reportFindingsEdit,
+            self.reportImpressionEdit,
+            self.reportRecommendationEdit,
+            self.reportLimitationsEdit,
+        ):
+            editor.clear()
+        self.reportReviewStatusLabel.setText("Review status: —")
+        self._set_report_editor_enabled(False)
+
+        def refresh_panels():
+            self.logic.assign_panels(
+                source_node=volume_node,
+                gradcam_node=gradcam_node,
+                anatomy_node=anatomy_node,
+                lesion_node=lesion_node,
+                use_source_fallback=False,
+            )
+            slicer.app.processEvents()
+
+        slicer.app.processEvents()
 
         # ── Classification ───────────────────────────────────────────
         try:
@@ -354,6 +585,7 @@ class ChestAnalyzerWidget(ScriptedLoadableModuleWidget):
             # GradCAM node was loaded by logic.classify()
             gradcam_node = self.logic.get_gradcam_node()
             anatomy_bbox = classify_result.get("bbox")
+            refresh_panels()
 
         except Exception as error:
             errors.append(f"Classification failed: {error}")
@@ -379,6 +611,7 @@ class ChestAnalyzerWidget(ScriptedLoadableModuleWidget):
                 reference_volume=volume_node,
                 bbox=anatomy_bbox,
             )
+            refresh_panels()
 
             conf = anatomy_result.get("confidence", {})
             ctr = anatomy_result.get("ctr")
@@ -421,6 +654,7 @@ class ChestAnalyzerWidget(ScriptedLoadableModuleWidget):
                 lesion_result=lesion_result,
                 reference_volume=volume_node,
             )
+            refresh_panels()
             findings = lesion_result.get("findings", [])
             top = findings[0] if findings else None
             self.lesionStatusLabel.setText("Status: Done")
@@ -485,19 +719,13 @@ class ChestAnalyzerWidget(ScriptedLoadableModuleWidget):
                 lesion_result=lesion_result,
                 cxformer_result=cxformer_result,
             )
-            self.reportPathLabel.setText("Report JSON: " + report_path)
+            self.reportPathLabel.setText("Report JSON: " + str(report_path))
+            self.onLoadReportDraft()
         except Exception as error:
             errors.append(f"Report export failed: {error}")
             self.reportPathLabel.setText("Report JSON: ERROR")
 
-        # ── Switch to 3-panel layout and assign views ─────────────────
-        self.logic.set_three_panel_layout(_CHEST_ANALYZER_LAYOUT_ID)
-        self.logic.assign_panels(
-            source_node=volume_node,
-            gradcam_node=gradcam_node,
-            anatomy_node=anatomy_node,
-            lesion_node=lesion_node,
-        )
+        refresh_panels()
 
         if errors:
             slicer.util.warningDisplay("\n".join(errors))
@@ -585,7 +813,7 @@ class ChestAnalyzerLogic(ScriptedLoadableModuleLogic):
         except Exception:
             pass
 
-    # ── Classification (unchanged from PneumoniaPredictor) ───────────────
+    # ── Classification ───────────────────────────────────────────────────
 
     def classify(self, volume_node, server_url, mask_node=None):
         temp_dir = tempfile.gettempdir()
@@ -896,10 +1124,8 @@ class ChestAnalyzerLogic(ScriptedLoadableModuleLogic):
         lesion_result=None,
         cxformer_result=None,
     ):
-        temp_dir = tempfile.gettempdir()
         source_name = volume_node.GetName() if volume_node else "unknown"
-        report_path = os.path.join(temp_dir, "chest_analyze_report.json")
-        report = {
+        raw_report = {
             "schema_version": "1.1-draft",
             "study": {
                 "study_id": source_name,
@@ -941,9 +1167,29 @@ class ChestAnalyzerLogic(ScriptedLoadableModuleLogic):
                 "cxformer_elapsed_s": (cxformer_result or {}).get("elapsed_s"),
             },
         }
-        with open(report_path, "w", encoding="utf-8") as report_file:
-            json.dump(report, report_file, indent=2, ensure_ascii=False)
-        self.debug_log("report exported", report_path=report_path)
+        image_hash = None
+        try:
+            storage_node = volume_node.GetStorageNode() if volume_node else None
+            image_hash = sha256_file(storage_node.GetFileName()) if storage_node else None
+        except Exception:
+            image_hash = None
+        clinical_report = build_clinical_report(raw_report)
+        run_study_id = source_name + "_" + datetime.now(timezone.utc).strftime(
+            "%Y%m%dT%H%M%S%fZ"
+        )
+        report_root = os.path.join(PROJECT_ROOT, "outputs", "reports")
+        report_dir = os.path.join(report_root, run_study_id)
+        os.makedirs(report_dir, exist_ok=True)
+        raw_image_path = os.path.join(report_dir, "raw_image.png")
+        if volume_node is not None:
+            self.save_volume_as_png(volume_node, raw_image_path)
+        report_path = save_report_bundle(
+            clinical_report,
+            output_root=report_root,
+            study_id=run_study_id,
+            image_hash=image_hash,
+        )
+        self.debug_log("clinical report exported", report_path=str(report_path))
         return report_path
 
     @staticmethod
@@ -1214,10 +1460,10 @@ class ChestAnalyzerLogic(ScriptedLoadableModuleLogic):
         from vtk.util import numpy_support
 
         overlay_rgb = np.asarray(overlay_rgb, dtype=np.uint8)
-        # The overlay from the server is natural order (row 0 = top).
-        # The IJK-to-RAS matrix copied from reference_volume has negative Y, so
-        # Slicer flips Y on display.  Pre-flip so the result displays right-side up.
-        overlay_rgb = np.flipud(overlay_rgb)
+        # The overlay is natural image order. Slicer displays the copied
+        # reference geometry with X/Y axis flips, so pre-flip both axes to keep
+        # left/right markers and anatomy aligned in the slice view.
+        overlay_rgb = np.flipud(np.fliplr(overlay_rgb))
         h, w = overlay_rgb.shape[:2]
 
         # Build VTK image data: VTK expects (x, y, z) = (w, h, 1) in Fortran order
@@ -1371,7 +1617,14 @@ class ChestAnalyzerLogic(ScriptedLoadableModuleLogic):
         )
 
     @staticmethod
-    def assign_panels(*, source_node, gradcam_node=None, anatomy_node=None, lesion_node=None):
+    def assign_panels(
+        *,
+        source_node,
+        gradcam_node=None,
+        anatomy_node=None,
+        lesion_node=None,
+        use_source_fallback=True,
+    ):
         """
         Red   -> GradCAM overlay, or source fallback
         Green → original X-ray background + anatomy segmentation overlay
@@ -1388,7 +1641,11 @@ class ChestAnalyzerLogic(ScriptedLoadableModuleLogic):
         )
 
         # Red: GradCAM overlay (falls back to source)
-        red_bg = gradcam_node if gradcam_node is not None else source_node
+        red_bg = (
+            gradcam_node
+            if gradcam_node is not None
+            else source_node if use_source_fallback else None
+        )
         red_widget = layout_manager.sliceWidget("Red")
         if red_widget:
             ChestAnalyzerLogic.debug_log(
@@ -1400,7 +1657,11 @@ class ChestAnalyzerLogic(ScriptedLoadableModuleLogic):
         # Green: rendered anatomy overlay (falls back to source)
         green_widget = layout_manager.sliceWidget("Green")
         if green_widget:
-            green_bg = anatomy_node if anatomy_node is not None else source_node
+            green_bg = (
+                anatomy_node
+                if anatomy_node is not None
+                else source_node if use_source_fallback else None
+            )
             ChestAnalyzerLogic.debug_log(
                 "assign green panel background",
                 background=green_bg.GetName() if green_bg else None,
@@ -1410,7 +1671,11 @@ class ChestAnalyzerLogic(ScriptedLoadableModuleLogic):
         # Yellow: paper-style MedicalPatchNet lesion display
         yellow_widget = layout_manager.sliceWidget("Yellow")
         if yellow_widget:
-            yellow_bg = lesion_node if lesion_node is not None else source_node
+            yellow_bg = (
+                lesion_node
+                if lesion_node is not None
+                else source_node if use_source_fallback else None
+            )
             ChestAnalyzerLogic.debug_log(
                 "assign yellow panel",
                 background=yellow_bg.GetName() if yellow_bg else None,
@@ -1424,9 +1689,29 @@ class ChestAnalyzerLogic(ScriptedLoadableModuleLogic):
         ChestAnalyzerLogic.debug_log("assign panels done")
 
     @staticmethod
+    def clear_three_panel_views():
+        layout_manager = slicer.app.layoutManager()
+        for view_name in ("Red", "Green", "Yellow"):
+            slice_widget = layout_manager.sliceWidget(view_name)
+            if not slice_widget:
+                continue
+            slice_widget.mrmlSliceNode().SetOrientationToAxial()
+            composite = slice_widget.mrmlSliceCompositeNode()
+            if hasattr(composite, "SetLinkedControl"):
+                composite.SetLinkedControl(False)
+            composite.SetBackgroundVolumeID("")
+            composite.SetForegroundVolumeID("")
+            composite.SetLabelVolumeID("")
+            slice_widget.sliceLogic().FitSliceToAll()
+            ChestAnalyzerLogic.debug_log("clear panel", view=view_name)
+        slicer.app.processEvents()
+
+    @staticmethod
     def assign_background_to_slice(slice_widget, background_node):
         slice_widget.mrmlSliceNode().SetOrientationToAxial()
         composite = slice_widget.mrmlSliceCompositeNode()
+        if hasattr(composite, "SetLinkedControl"):
+            composite.SetLinkedControl(False)
         composite.SetBackgroundVolumeID(background_node.GetID() if background_node else "")
         composite.SetForegroundVolumeID("")
         composite.SetLabelVolumeID("")
@@ -1498,8 +1783,6 @@ class ChestAnalyzerLogic(ScriptedLoadableModuleLogic):
                 if (
                     node.GetName() == "GradCAM_Overlay"
                     or node.GetAttribute("ChestAnalyzer.IsGradCAM") == "1"
-                    # backward compat with old attribute name
-                    or node.GetAttribute("PneumoniaPredictor.IsGradCAM") == "1"
                 ):
                     slicer.mrmlScene.RemoveNode(node)
 
@@ -1643,7 +1926,7 @@ class ChestAnalyzerLogic(ScriptedLoadableModuleLogic):
                 traceback=traceback.format_exc(),
             )
 
-    # ── GradCAM overlay loader (same as PneumoniaPredictor) ──────────────
+    # ── GradCAM overlay loader ───────────────────────────────────────────
 
     @staticmethod
     def load_overlay_as_volume(
@@ -1802,7 +2085,6 @@ class ChestAnalyzerLogic(ScriptedLoadableModuleLogic):
             volume_node.GetName() in ("GradCAM_Overlay", "AnatomyOverlay", "LesionOverlay")
             or volume_node.GetAttribute("ChestAnalyzer.IsGradCAM") == "1"
             or volume_node.GetAttribute("ChestAnalyzer.IsLesion") == "1"
-            or volume_node.GetAttribute("PneumoniaPredictor.IsGradCAM") == "1"
             or volume_node.GetHideFromEditors()
         ):
             return False

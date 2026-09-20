@@ -86,7 +86,7 @@ flowchart TD
     MLI --> LCKPT["MONAI lung checkpoint"]
     MLI --> CCKPT["central classifier checkpoint"]
 
-    SLICER["PneumoniaPredictor.py"] --> API["backend/app.py"]
+    SLICER["ChestAnalyzer.py"] --> API["backend/app.py"]
     API --> CIS["ClassifierInferenceService"]
 
     RUN["run_full_pipeline.py"] --> ORCH["FullPipelineRunner"]
@@ -304,7 +304,7 @@ It writes `outputs/full_pipeline/final_report.md` and `final_report.html`.
 | `monai_apps/lung_monai_app/lib/infers/*.py` | PRODUCTION | Loads segmentation/classifier models and runs inference. | KEEP |
 | `monai_apps/lung_monai_app/lib/strategies/*.py` | PRODUCTION | Registered review strategies. | KEEP |
 | `pneumonia_slicer_app/backend/app.py` | PRODUCTION | HTTP classifier/Grad-CAM backend. | KEEP |
-| `pneumonia_slicer_app/slicer_module/PneumoniaPredictor/PneumoniaPredictor.py` | PRODUCTION | 3D Slicer module consuming backend API. | KEEP |
+| `pneumonia_slicer_app/slicer_module/ChestAnalyzer/ChestAnalyzer.py` | PRODUCTION | Active 3D Slicer module consuming MONAI Label inference APIs. | KEEP |
 | `pneumonia_slicer_app/backend/test_api.py` | SUPPORTING | Manual API smoke client; not production runtime. | KEEP |
 
 ### Tests and Fixtures
